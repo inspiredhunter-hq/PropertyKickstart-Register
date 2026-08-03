@@ -19,6 +19,12 @@
 // query/create/update endpoints work correctly regardless of whether the
 // parent database is single- or multi-source.
 //
+// IMPORTANT: "Property Code" is a Notion `unique_id` property (Notion's
+// auto-increment ID type, e.g. renders as "PKD-71"), NOT a rich_text field.
+// It must be filtered with { unique_id: { equals: <number> } }, using only
+// the numeric suffix. Confirmed against the live data source schema
+// (fefec549-07c4-46a6-b932-cd05a38e0e92) on 2026-08-03.
+//
 // Required environment variables (set in Netlify site settings):
 //   NOTION_TOKEN            - Notion internal integration secret
 //   PK_Register_Brevo_Key   - Brevo API v3 key
@@ -66,17 +72,33 @@ function getText(prop) {
   if (prop.type === "rich_text") return (prop.rich_text || []).map((t) => t.plain_text).join("");
   if (prop.type === "select") return prop.select ? prop.select.name : null;
   if (prop.type === "url") return prop.url;
+  if (prop.type === "unique_id") {
+    if (!prop.unique_id) return null;
+    const { prefix, number } = prop.unique_id;
+    return prefix ? `${prefix}-${number}` : String(number);
+  }
   return null;
 }
 
+// Parses an incoming property code like "PKD-71", "PKD71", or "71" down to
+// just the numeric suffix required by the unique_id filter. Returns null if
+// no numeric portion can be found.
+function parsePropertyCodeNumber(code) {
+  const match = String(code).match(/(\d+)\s*$/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
 async function findPipelinePage(token, code) {
+  const codeNumber = parsePropertyCodeNumber(code);
+  if (codeNumber === null) return null;
+
   const response = await notionRequest(
     `/data_sources/${PIPELINE_DATA_SOURCE_ID}/query`,
     token,
     {
       method: "POST",
       body: JSON.stringify({
-        filter: { property: "Property Code", rich_text: { equals: code } },
+        filter: { property: "Property Code", unique_id: { equals: codeNumber } },
         page_size: 1,
       }),
     }
@@ -297,3 +319,4 @@ exports.handler = async (event) => {
     }),
   };
 };
+

@@ -2,8 +2,5 @@
   "name": "propertykickstart-register",
   "version": "1.0.0",
   "private": true,
-  "description": "Lead-capture registration page for register.propertykickstart.co.uk",
-  "dependencies": {
-    "@notionhq/client": "^2.2.15"
-  }
+  "description": "Lead-capture registration page for register.propertykickstart.co.uk. Uses raw fetch against Notion's REST API (2025-09-03) rather than @notionhq/client, since the older SDK version cannot query multi-data-source databases (Property Deals Pipeline has more than one data source)."
 }

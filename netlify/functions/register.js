@@ -11,8 +11,8 @@
 // Never fetches, references, or returns any PDF or PDF-derived field.
 //
 // Required environment variables (set in Netlify site settings):
-//   NOTION_TOKEN        - Notion internal integration secret
-//   BREVO_API_KEY        - Brevo API v3 key
+//   NOTION_TOKEN            - Notion internal integration secret
+//   PK_Register_Brevo_Key   - Brevo API v3 key
 
 const { Client } = require("@notionhq/client");
 
@@ -118,8 +118,8 @@ exports.handler = async (event) => {
   if (!isValidEmail(email)) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid email address" }) };
   }
-  if (!process.env.NOTION_TOKEN || !process.env.BREVO_API_KEY) {
-    console.error("Missing NOTION_TOKEN or BREVO_API_KEY env vars");
+  if (!process.env.NOTION_TOKEN || !process.env.PK_Register_Brevo_Key) {
+    console.error("Missing NOTION_TOKEN or PK_Register_Brevo_Key env vars");
     return { statusCode: 500, headers, body: JSON.stringify({ error: "Server misconfigured" }) };
   }
 
@@ -150,7 +150,7 @@ exports.handler = async (event) => {
   let brevoSynced = false;
   let brevoError = null;
   try {
-    await upsertBrevoContact(process.env.BREVO_API_KEY, {
+    await upsertBrevoContact(process.env.PK_Register_Brevo_Key, {
       email,
       attributes: {
         FIRSTNAME: firstName,

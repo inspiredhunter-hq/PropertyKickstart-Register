@@ -10,7 +10,9 @@
 
 const { Client } = require("@notionhq/client");
 
-const PIPELINE_DATA_SOURCE_ID = "fefec549-07c4-46a6-b932-cd05a38e0e92";
+// Property Deals Pipeline database ID (page ID, not data source/collection ID).
+// The @notionhq/client SDK's databases.query() expects the database ID.
+const PIPELINE_DATABASE_ID = "710fe865009045849686b7c6a64cae81";
 
 exports.handler = async (event) => {
   const headers = {
@@ -41,8 +43,8 @@ exports.handler = async (event) => {
   const code = propertyCode.trim().toUpperCase();
 
   try {
-    const response = await notion.dataSources.query({
-      data_source_id: PIPELINE_DATA_SOURCE_ID,
+    const response = await notion.databases.query({
+      database_id: PIPELINE_DATABASE_ID,
       filter: {
         property: "Property Code",
         rich_text: { equals: code },

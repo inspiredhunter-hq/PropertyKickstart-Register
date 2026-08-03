@@ -16,8 +16,10 @@
 
 const { Client } = require("@notionhq/client");
 
-const PIPELINE_DATA_SOURCE_ID = "fefec549-07c4-46a6-b932-cd05a38e0e92";
-const REGISTRATIONS_DATA_SOURCE_ID = "e0403204-ff59-4f63-aff7-bd840f5ce7c1";
+// Database IDs (page IDs, not data source/collection IDs) — the
+// @notionhq/client SDK's databases.query() and pages.create() expect these.
+const PIPELINE_DATABASE_ID = "710fe865009045849686b7c6a64cae81";
+const REGISTRATIONS_DATABASE_ID = "a58647ef50074ad69a720466adba77f3";
 const BREVO_LIST_ID = 8; // "Registrations - Website"
 
 function isValidEmail(email) {
@@ -25,8 +27,8 @@ function isValidEmail(email) {
 }
 
 async function findPipelinePage(notion, code) {
-  const response = await notion.dataSources.query({
-    data_source_id: PIPELINE_DATA_SOURCE_ID,
+  const response = await notion.databases.query({
+    database_id: PIPELINE_DATABASE_ID,
     filter: {
       property: "Property Code",
       rich_text: { equals: code },
@@ -207,7 +209,7 @@ exports.handler = async (event) => {
     Object.keys(properties).forEach((k) => properties[k] === undefined && delete properties[k]);
 
     await notion.pages.create({
-      parent: { data_source_id: REGISTRATIONS_DATA_SOURCE_ID },
+      parent: { database_id: REGISTRATIONS_DATABASE_ID },
       properties,
     });
   } catch (err) {

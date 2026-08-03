@@ -9,13 +9,21 @@
 // has multiple data sources — the older SDK's databases.query() only
 // supports single-data-source databases and fails with a validation_error
 // ("Databases with multiple data sources are not supported in this API
-// version") on this database. The 2025-09-03 data-source query endpoint
-// handles multi-source databases correctly.
+// version"). The 2025-09-03 data-source query endpoint handles multi-source
+// databases correctly.
 //
 // Requires environment variable NOTION_TOKEN (Notion internal integration
 // secret) to be set in Netlify site settings. The integration must be
 // shared/granted access to the Property Deals Pipeline database in Notion
 // (via its ••• menu → Connections → PK Register Site).
+//
+// IMPORTANT: "Property Code" is a Notion `unique_id` property (Notion's
+// auto-increment ID type, e.g. renders as "PKD-71"), NOT a rich_text field.
+// It must be filtered with { unique_id: { equals: <number> } }, using only
+// the numeric suffix (e.g. 71, not "PKD-71" or "PKD71"). Confirmed against
+// the live data source schema (fefec549-07c4-46a6-b932-cd05a38e0e92) on
+// 2026-08-03 — Property Code has type "unique_id" (internal alias
+// "auto_increment_id"), backed by an integer column.
 
 const NOTION_API_VERSION = "2025-09-03";
 const NOTION_API_BASE = "https://api.notion.com/v1";
@@ -54,7 +62,20 @@ function getText(prop) {
   if (prop.type === "multi_select") return (prop.multi_select || []).map((o) => o.name);
   if (prop.type === "url") return prop.url;
   if (prop.type === "number") return prop.number;
+  if (prop.type === "unique_id") {
+    if (!prop.unique_id) return null;
+    const { prefix, number } = prop.unique_id;
+    return prefix ? `${prefix}-${number}` : String(number);
+  }
   return null;
+}
+
+// Parses an incoming property code like "PKD-71", "PKD71", or "71" down to
+// just the numeric suffix required by the unique_id filter. Returns null if
+// no numeric portion can be found.
+function parsePropertyCodeNumber(code) {
+  const match = String(code).match(/(\d+)\s*$/);
+  return match ? parseInt(match[1], 10) : null;
 }
 
 exports.handler = async (event) => {
@@ -83,6 +104,16 @@ exports.handler = async (event) => {
   }
 
   const code = propertyCode.trim().toUpperCase();
+  const codeNumber = parsePropertyCodeNumber(code);
+
+  if (codeNumber === null) {
+    console.error("Could not parse a numeric Property Code from:", code);
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({ found: false, reason: "invalid_code_format", code }),
+    };
+  }
 
   try {
     const response = await notionRequest(
@@ -93,7 +124,7 @@ exports.handler = async (event) => {
         body: JSON.stringify({
           filter: {
             property: "Property Code",
-            rich_text: { equals: code },
+            unique_id: { equals: codeNumber },
           },
           page_size: 1,
         }),
@@ -145,3 +176,4 @@ exports.handler = async (event) => {
     };
   }
 };
+

@@ -4,7 +4,8 @@
 //   1. Looks up the property (if a code was provided) to confirm it and get
 //      its live URL + Notion page id for the relation.
 //   2. Creates/updates a Brevo contact (upsert by email) with attribution.
-//   3. Creates a Property Registrations record in Notion.
+//   3. Finds-or-creates the investor in Notion's Investors DB (CRM) — updates
+//      an existing investor record by email rather than duplicating.
 //   4. Returns a redirect target (live Property URL) or a flag to show the
 //      generic "you're registered" confirmation.
 //
@@ -19,7 +20,10 @@ const { Client } = require("@notionhq/client");
 // Database IDs (page IDs, not data source/collection IDs) — the
 // @notionhq/client SDK's databases.query() and pages.create() expect these.
 const PIPELINE_DATABASE_ID = "710fe865009045849686b7c6a64cae81";
-const REGISTRATIONS_DATABASE_ID = "a58647ef50074ad69a720466adba77f3";
+// Investors DB is the CRM destination for all registrations (not a separate
+// log) — see ACT-572 for the decision to fold registrations into the
+// existing Investors DB rather than a standalone Property Registrations DB.
+const INVESTORS_DATABASE_ID = "ffd4d0428cc64de2b6602e60dafa8a2f";
 const BREVO_LIST_ID = 8; // "Registrations - Website"
 
 function isValidEmail(email) {
@@ -172,15 +176,15 @@ exports.handler = async (event) => {
     brevoError = err.message;
   }
 
-  // Step 3: create Notion registration record
+  // Step 3: find-or-create the investor record in Investors DB
   const redirectTo = isLive && propertyUrl ? propertyUrl : null;
   let notionError = null;
   try {
     const properties = {
-      "Registrant Name": { title: [{ text: { content: firstName } }] },
-      Email: { rich_text: [{ text: { content: email } }] },
+      "Full Name": { title: [{ text: { content: firstName } }] },
+      Email: { email },
       "Property Code Entered": { rich_text: [{ text: { content: propertyCodeRaw } }] },
-      "Source Platform": source ? { select: { name: source } } : undefined,
+      Source: { select: { name: "Website" } },
       "Campaign ID": { rich_text: [{ text: { content: campaign } }] },
       "UTM Source": { rich_text: [{ text: { content: utmSource } }] },
       "UTM Medium": { rich_text: [{ text: { content: utmMedium } }] },
@@ -192,28 +196,39 @@ exports.handler = async (event) => {
       "Consent Given": { checkbox: true },
       "Submitted At": { date: { start: new Date().toISOString() } },
       "Brevo Contact Synced": { checkbox: brevoSynced },
-      Notes: {
-        rich_text: [
-          {
-            text: {
-              content: brevoError ? `Brevo sync failed: ${brevoError}` : "",
-            },
-          },
-        ],
-      },
     };
     if (pipelinePage) {
-      properties["Property"] = { relation: [{ id: pipelinePage.id }] };
+      properties["Deals Shared"] = { relation: [{ id: pipelinePage.id }] };
     }
     // Strip undefined keys (Notion API rejects undefined values)
     Object.keys(properties).forEach((k) => properties[k] === undefined && delete properties[k]);
 
-    await notion.pages.create({
-      parent: { database_id: REGISTRATIONS_DATABASE_ID },
-      properties,
+    // Check for an existing investor by email first — update rather than
+    // duplicate if this person has registered before (e.g. for a different
+    // property, or has registered interest previously).
+    const existing = await notion.databases.query({
+      database_id: INVESTORS_DATABASE_ID,
+      filter: { property: "Email", email: { equals: email } },
+      page_size: 1,
     });
+
+    if (existing.results && existing.results.length > 0) {
+      // Don't downgrade Status on an existing investor — only set Status on
+      // first creation. Existing investor property/campaign fields are
+      // simply updated to reflect this latest registration.
+      await notion.pages.update({
+        page_id: existing.results[0].id,
+        properties,
+      });
+    } else {
+      properties["Status"] = { select: { name: "Warm Lead" } };
+      await notion.pages.create({
+        parent: { database_id: INVESTORS_DATABASE_ID },
+        properties,
+      });
+    }
   } catch (err) {
-    console.error("Notion registration record failed:", err);
+    console.error("Notion investor record failed:", err);
     notionError = err.message;
   }
 

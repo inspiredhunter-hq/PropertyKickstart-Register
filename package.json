@@ -1,0 +1,9 @@
+{
+  "name": "propertykickstart-register",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lead-capture registration page for register.propertykickstart.co.uk",
+  "dependencies": {
+    "@notionhq/client": "^2.2.15"
+  }
+}

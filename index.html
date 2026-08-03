@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Get the full property details | Property Kickstart</title>
+<meta name="description" content="Register your details to view this Property Kickstart opportunity and receive alerts about similar properties.">
+<style>
+  :root {
+    --green: #143d3a;
+    --gold: #b58b44;
+    --cream: #f7f3ec;
+    --sand: #e8dfd2;
+    --text: #425653;
+    --line: #eadfce;
+    --error: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: linear-gradient(135deg, var(--cream), var(--sand));
+    color: var(--green);
+    min-height: 100vh;
+    padding: 24px;
+  }
+  .wrap { max-width: 480px; margin: 0 auto; }
+  .card {
+    background: #fff;
+    padding: 36px 28px;
+    border-radius: 28px;
+    box-shadow: 0 18px 45px rgba(20, 61, 58, 0.14);
+    border: 1px solid var(--line);
+  }
+  .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 1.6px;
+    font-size: 12px;
+    font-weight: bold;
+    color: var(--gold);
+    margin-bottom: 12px;
+  }
+  h1 { font-size: 28px; line-height: 1.15; margin: 0 0 14px; color: var(--green); }
+  .intro { font-size: 16px; line-height: 1.6; color: var(--text); margin-bottom: 24px; }
+
+  .property-context {
+    display: none;
+    background: var(--cream);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 16px 18px;
+    margin-bottom: 24px;
+  }
+  .property-context.show { display: block; }
+  .property-context img {
+    width: 100%;
+    border-radius: 10px;
+    margin-bottom: 10px;
+    max-height: 160px;
+    object-fit: cover;
+  }
+  .property-context .pc-title { font-weight: bold; font-size: 16px; color: var(--green); }
+  .property-context .pc-meta { font-size: 14px; color: var(--text); margin-top: 2px; }
+  .property-context .pc-unavailable {
+    font-size: 13px;
+    color: var(--gold);
+    margin-top: 8px;
+    font-weight: bold;
+  }
+
+  label {
+    display: block;
+    font-size: 14px;
+    font-weight: bold;
+    margin-bottom: 6px;
+    color: var(--green);
+  }
+  .field { margin-bottom: 18px; }
+  input[type="text"], input[type="email"] {
+    width: 100%;
+    padding: 13px 14px;
+    font-size: 16px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--cream);
+    color: var(--green);
+    font-family: inherit;
+  }
+  input:focus { outline: 2px solid var(--gold); outline-offset: 1px; }
+  .optional-tag { font-weight: normal; color: var(--text); font-size: 12px; }
+  .error-text {
+    display: none;
+    color: var(--error);
+    font-size: 13px;
+    margin-top: 6px;
+  }
+  .field.has-error input { border-color: var(--error); }
+  .field.has-error .error-text { display: block; }
+
+  button[type="submit"] {
+    width: 100%;
+    padding: 15px;
+    font-size: 17px;
+    font-weight: bold;
+    background: var(--green);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    margin-top: 4px;
+  }
+  button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
+  button[type="submit"]:hover:not(:disabled) { background: #0e2b28; }
+
+  .consent-msg {
+    font-size: 13px;
+    color: var(--text);
+    margin-top: 14px;
+    line-height: 1.5;
+    text-align: center;
+  }
+  .consent-msg a { color: var(--gold); }
+
+  .form-error-banner {
+    display: none;
+    background: #fbeceb;
+    border: 1px solid var(--error);
+    color: var(--error);
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 14px;
+    margin-bottom: 18px;
+  }
+  .form-error-banner.show { display: block; }
+
+  #confirmation {
+    display: none;
+    text-align: center;
+  }
+  #confirmation.show { display: block; }
+  #confirmation h1 { font-size: 24px; }
+  #registration-form.hide { display: none; }
+
+  .footer-note {
+    text-align: center;
+    font-size: 12px;
+    color: var(--text);
+    margin-top: 18px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+
+    <div id="form-view">
+      <div class="eyebrow">Property Kickstart</div>
+      <h1>Get the full property details</h1>
+      <p class="intro">Enter your details to view this opportunity and receive alerts about similar properties as they become available.</p>
+
+      <div class="property-context" id="property-context">
+        <img id="pc-photo" alt="" style="display:none;">
+        <div class="pc-title" id="pc-title"></div>
+        <div class="pc-meta" id="pc-meta"></div>
+        <div class="pc-unavailable" id="pc-unavailable" style="display:none;">This specific opportunity is no longer available — but we'll register your interest for similar properties.</div>
+      </div>
+
+      <div class="form-error-banner" id="form-error-banner"></div>
+
+      <form id="registration-form">
+        <div class="field" id="field-firstName">
+          <label for="firstName">First name</label>
+          <input type="text" id="firstName" name="firstName" autocomplete="given-name" required>
+          <div class="error-text">Please enter your first name.</div>
+        </div>
+
+        <div class="field" id="field-email">
+          <label for="email">Email address</label>
+          <input type="email" id="email" name="email" autocomplete="email" required>
+          <div class="error-text">Please enter a valid email address.</div>
+        </div>
+
+        <div class="field" id="field-property">
+          <label for="propertyCode">Property Registration ID <span class="optional-tag">(optional)</span></label>
+          <input type="text" id="propertyCode" name="propertyCode" autocomplete="off" placeholder="e.g. PKD-71">
+        </div>
+
+        <button type="submit" id="submit-btn">View the property details</button>
+
+        <p class="consent-msg">
+          By continuing, you are also registering to receive alerts about similar Property Kickstart opportunities.
+          See our <a href="https://propertykickstart.co.uk/privacy" target="_blank" rel="noopener">Privacy Policy</a>.
+        </p>
+      </form>
+    </div>
+
+    <div id="confirmation">
+      <div class="eyebrow">Property Kickstart</div>
+      <h1>You're registered.</h1>
+      <p class="intro">We'll now let you know when new Property Kickstart opportunities become available.</p>
+    </div>
+
+  </div>
+  <p class="footer-note">Property Kickstart — helping investors find quality opportunities.</p>
+</div>
+
+<script>
+(function () {
+  const params = new URLSearchParams(window.location.search);
+  const propertyCodeParam = (params.get("property") || "").trim();
+  const sourceParam = (params.get("source") || "").trim();
+  const campaignParam = (params.get("campaign") || "").trim();
+  const utmSource = (params.get("utm_source") || "").trim();
+  const utmMedium = (params.get("utm_medium") || "").trim();
+  const utmCampaign = (params.get("utm_campaign") || "").trim();
+
+  const propertyCodeInput = document.getElementById("propertyCode");
+  const propertyContext = document.getElementById("property-context");
+  const pcPhoto = document.getElementById("pc-photo");
+  const pcTitle = document.getElementById("pc-title");
+  const pcMeta = document.getElementById("pc-meta");
+  const pcUnavailable = document.getElementById("pc-unavailable");
+
+  let resolvedPropertyIsLive = false;
+
+  if (propertyCodeParam) {
+    propertyCodeInput.value = propertyCodeParam;
+    // Hide the field visually since it's auto-carried — but keep it in the DOM
+    // so it still submits. Visitors arriving via a property link never need
+    // to type a reference manually.
+    document.getElementById("field-property").style.display = "none";
+
+    fetch("/.netlify/functions/lookup-property?property=" + encodeURIComponent(propertyCodeParam))
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && data.found) {
+          resolvedPropertyIsLive = !!data.isLive;
+          if (data.mainPhotoUrl) {
+            pcPhoto.src = data.mainPhotoUrl;
+            pcPhoto.style.display = "block";
+          }
+          const bits = [];
+          if (data.town) bits.push(Array.isArray(data.town) ? data.town.join(", ") : data.town);
+          if (data.strategy) bits.push(data.strategy);
+          pcTitle.textContent = data.propertyName || ("Property " + data.propertyCode);
+          pcMeta.textContent = bits.join(" · ");
+          if (!data.isLive) {
+            pcUnavailable.style.display = "block";
+          }
+          propertyContext.classList.add("show");
+        }
+        // If not found: silently proceed as general registration, no error shown.
+      })
+      .catch(() => {
+        // Silent fallback to general registration on any lookup error.
+      });
+  }
+
+  const form = document.getElementById("registration-form");
+  const submitBtn = document.getElementById("submit-btn");
+  const errorBanner = document.getElementById("form-error-banner");
+
+  function setFieldError(fieldId, hasError) {
+    document.getElementById(fieldId).classList.toggle("has-error", hasError);
+  }
+
+  function isValidEmail(v) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  }
+
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    errorBanner.classList.remove("show");
+
+    const firstName = document.getElementById("firstName").value.trim();
+    const email = document.getElementById("email").value.trim();
+    const propertyCode = propertyCodeInput.value.trim();
+
+    let valid = true;
+    setFieldError("field-firstName", false);
+    setFieldError("field-email", false);
+
+    if (!firstName) {
+      setFieldError("field-firstName", true);
+      valid = false;
+    }
+    if (!email || !isValidEmail(email)) {
+      setFieldError("field-email", true);
+      valid = false;
+    }
+    if (!valid) return;
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Please wait…";
+
+    fetch("/.netlify/functions/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        firstName,
+        email,
+        propertyCode,
+        source: sourceParam,
+        campaign: campaignParam,
+        utmSource,
+        utmMedium,
+        utmCampaign,
+        landingPageUrl: window.location.href,
+      }),
+    })
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || "Something went wrong. Please try again.");
+        return data;
+      })
+      .then((data) => {
+        if (data.redirectTo) {
+          window.location.href = data.redirectTo;
+          return;
+        }
+        document.getElementById("form-view").style.display = "none";
+        document.getElementById("confirmation").classList.add("show");
+      })
+      .catch((err) => {
+        errorBanner.textContent = err.message || "Something went wrong. Please try again.";
+        errorBanner.classList.add("show");
+        submitBtn.disabled = false;
+        submitBtn.textContent = "View the property details";
+      });
+  });
+})();
+</script>
+</body>
+</html>

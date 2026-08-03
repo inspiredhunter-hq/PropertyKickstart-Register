@@ -11,36 +11,53 @@
 //
 // Never fetches, references, or returns any PDF or PDF-derived field.
 //
+// Uses raw fetch against Notion's REST API (not the @notionhq/client SDK)
+// with API version 2025-09-03. The Property Deals Pipeline database has
+// multiple data sources, which the older SDK's databases.query() cannot
+// handle (fails with validation_error: "Databases with multiple data
+// sources are not supported in this API version"). The data-source-specific
+// query/create/update endpoints work correctly regardless of whether the
+// parent database is single- or multi-source.
+//
 // Required environment variables (set in Netlify site settings):
 //   NOTION_TOKEN            - Notion internal integration secret
 //   PK_Register_Brevo_Key   - Brevo API v3 key
 
-const { Client } = require("@notionhq/client");
+const NOTION_API_VERSION = "2025-09-03";
+const NOTION_API_BASE = "https://api.notion.com/v1";
 
-// Database IDs (page IDs, not data source/collection IDs) — the
-// @notionhq/client SDK's databases.query() and pages.create() expect these.
-const PIPELINE_DATABASE_ID = "710fe865009045849686b7c6a64cae81";
+// Property Deals Pipeline's main data source (confirmed via live record:
+// 138 Hainton Avenue, Grimsby, Property Code PKD-71, this data source ID).
+const PIPELINE_DATA_SOURCE_ID = "fefec549-07c4-46a6-b932-cd05a38e0e92";
 // Investors DB is the CRM destination for all registrations (not a separate
 // log) — see ACT-572 for the decision to fold registrations into the
 // existing Investors DB rather than a standalone Property Registrations DB.
-const INVESTORS_DATABASE_ID = "ffd4d0428cc64de2b6602e60dafa8a2f";
+const INVESTORS_DATA_SOURCE_ID = "0c8ed56c-8c78-40ba-9f44-b8e8c97d0aec";
 const BREVO_LIST_ID = 8; // "Registrations - Website"
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-async function findPipelinePage(notion, code) {
-  const response = await notion.databases.query({
-    database_id: PIPELINE_DATABASE_ID,
-    filter: {
-      property: "Property Code",
-      rich_text: { equals: code },
+async function notionRequest(path, token, options = {}) {
+  const res = await fetch(`${NOTION_API_BASE}${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Notion-Version": NOTION_API_VERSION,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
     },
-    page_size: 1,
   });
-  if (!response.results || response.results.length === 0) return null;
-  return response.results[0];
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(body.message || `Notion API error (${res.status})`);
+    err.status = res.status;
+    err.code = body.code;
+    err.body = body;
+    throw err;
+  }
+  return body;
 }
 
 function getText(prop) {
@@ -50,6 +67,38 @@ function getText(prop) {
   if (prop.type === "select") return prop.select ? prop.select.name : null;
   if (prop.type === "url") return prop.url;
   return null;
+}
+
+async function findPipelinePage(token, code) {
+  const response = await notionRequest(
+    `/data_sources/${PIPELINE_DATA_SOURCE_ID}/query`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        filter: { property: "Property Code", rich_text: { equals: code } },
+        page_size: 1,
+      }),
+    }
+  );
+  if (!response.results || response.results.length === 0) return null;
+  return response.results[0];
+}
+
+async function findInvestorByEmail(token, email) {
+  const response = await notionRequest(
+    `/data_sources/${INVESTORS_DATA_SOURCE_ID}/query`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        filter: { property: "Email", email: { equals: email } },
+        page_size: 1,
+      }),
+    }
+  );
+  if (!response.results || response.results.length === 0) return null;
+  return response.results[0];
 }
 
 async function upsertBrevoContact(apiKey, payload) {
@@ -129,7 +178,7 @@ exports.handler = async (event) => {
     return { statusCode: 500, headers, body: JSON.stringify({ error: "Server misconfigured" }) };
   }
 
-  const notion = new Client({ auth: process.env.NOTION_TOKEN });
+  const notionToken = process.env.NOTION_TOKEN;
 
   // Step 1: resolve property if a code was given
   let pipelinePage = null;
@@ -139,7 +188,7 @@ exports.handler = async (event) => {
 
   if (propertyCode) {
     try {
-      pipelinePage = await findPipelinePage(notion, propertyCode);
+      pipelinePage = await findPipelinePage(notionToken, propertyCode);
       if (pipelinePage) {
         const availability = getText(pipelinePage.properties["Availability"]);
         propertyUrl = getText(pipelinePage.properties["Property URL"]);
@@ -147,7 +196,7 @@ exports.handler = async (event) => {
         registrationType = "Property-Specific";
       }
     } catch (err) {
-      console.error("Pipeline lookup failed during registration:", err);
+      console.error("Pipeline lookup failed during registration:", err.status, err.message);
       // Continue as general registration rather than failing the whole submit
     }
   }
@@ -203,32 +252,26 @@ exports.handler = async (event) => {
     // Strip undefined keys (Notion API rejects undefined values)
     Object.keys(properties).forEach((k) => properties[k] === undefined && delete properties[k]);
 
-    // Check for an existing investor by email first — update rather than
-    // duplicate if this person has registered before (e.g. for a different
-    // property, or has registered interest previously).
-    const existing = await notion.databases.query({
-      database_id: INVESTORS_DATABASE_ID,
-      filter: { property: "Email", email: { equals: email } },
-      page_size: 1,
-    });
+    // Find-or-update by email rather than always creating a new investor row.
+    const existing = await findInvestorByEmail(notionToken, email);
 
-    if (existing.results && existing.results.length > 0) {
-      // Don't downgrade Status on an existing investor — only set Status on
-      // first creation. Existing investor property/campaign fields are
-      // simply updated to reflect this latest registration.
-      await notion.pages.update({
-        page_id: existing.results[0].id,
-        properties,
+    if (existing) {
+      await notionRequest(`/pages/${existing.id}`, notionToken, {
+        method: "PATCH",
+        body: JSON.stringify({ properties }),
       });
     } else {
       properties["Status"] = { select: { name: "Warm Lead" } };
-      await notion.pages.create({
-        parent: { database_id: INVESTORS_DATABASE_ID },
-        properties,
+      await notionRequest(`/pages`, notionToken, {
+        method: "POST",
+        body: JSON.stringify({
+          parent: { data_source_id: INVESTORS_DATA_SOURCE_ID },
+          properties,
+        }),
       });
     }
   } catch (err) {
-    console.error("Notion investor record failed:", err);
+    console.error("Notion investor record failed:", err.status, err.message);
     notionError = err.message;
   }
 

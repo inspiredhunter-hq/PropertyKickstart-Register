@@ -36,7 +36,7 @@ function samplePipelinePage(overrides = {}) {
     id: "pipeline-page-1",
     properties: {
       "Property Code": richText(PROPERTY_CODE),
-      "Legacy Property ID": { type: "number", number: 35 },
+      "Legacy Property ID": { type: "unique_id", unique_id: { prefix: "PKD", number: 35 } },
       "Property Name": text("16, Feltons, Skelmersdale, WN8 6RP"),
       Town: text("Skelmersdale"),
       Strategy: { type: "select", select: { name: "Housing Association" } },
@@ -85,7 +85,7 @@ test("lookup normalises and exactly matches the current text Property Code, retu
   assert.equal(JSON.stringify(body).includes("Monthly Rent"), false);
 });
 
-test("lookup keeps legacy PKD support separate on the numeric Legacy Property ID field", async () => {
+test("lookup keeps legacy PKD support separate on the Legacy Property ID unique ID field", async () => {
   let query;
   global.fetch = async (url, options) => {
     query = JSON.parse(options.body);
@@ -94,8 +94,18 @@ test("lookup keeps legacy PKD support separate on the numeric Legacy Property ID
 
   const result = await lookupProperty({ queryStringParameters: { property: "PKD-35" } });
   assert.equal(result.statusCode, 200);
-  assert.deepEqual(query.filter, { property: "Legacy Property ID", number: { equals: 35 } });
+  assert.deepEqual(query.filter, { property: "Legacy Property ID", unique_id: { equals: 35 } });
   assert.equal(JSON.parse(result.body).propertyCode, PROPERTY_CODE);
+});
+
+test("legacy lookup rejects a Legacy Property ID with a different prefix", async () => {
+  const page = samplePipelinePage({
+    "Legacy Property ID": { type: "unique_id", unique_id: { prefix: "OTHER", number: 35 } },
+  });
+  global.fetch = async () => jsonResponse({ results: [page] });
+  const result = await lookupProperty({ queryStringParameters: { property: "PKD-35" } });
+  assert.equal(result.statusCode, 404);
+  assert.equal(JSON.parse(result.body).reason, "not_found");
 });
 
 test("lookup rejects invalid or blank property parameters without querying Pipeline", async () => {
@@ -123,7 +133,7 @@ test("lookup distinguishes a genuine no-code visit from a failed property-specif
 test("the superseded HA-NW-QKYUH acceptance property resolves but is not treated as live", async () => {
   const page = samplePipelinePage({
     "Property Code": richText(WITHDRAWN_CODE),
-    "Legacy Property ID": { type: "number", number: 26 },
+    "Legacy Property ID": { type: "unique_id", unique_id: { prefix: "PKD", number: 26 } },
     "Property Name": text("19, Edge Street, St Helens, WA9 5JY"),
     Town: text("St Helens"),
     Availability: { type: "select", select: { name: "Withdrawn" } },
@@ -233,14 +243,14 @@ test("a property-specific landing URL cannot be submitted as a general registrat
   assert.equal(calls, 0);
 });
 
-test("legacy registration resolves to and stores the canonical Property Code", async () => {
+test("legacy registration resolves the unique ID and stores the canonical Property Code", async () => {
   const calls = registerMockFetch();
   const result = await register(registerEvent({ propertyCode: "PKD-35", source: "whatsapp" }));
   const query = calls.find((call) => call.url.includes(`/data_sources/${PIPELINE_ID}/query`));
   const crmCreate = calls.find((call) => call.url === "https://api.notion.com/v1/pages").body;
   const brevo = calls.find((call) => call.url === "https://api.brevo.com/v3/contacts").body;
   assert.equal(result.statusCode, 200);
-  assert.deepEqual(query.body.filter, { property: "Legacy Property ID", number: { equals: 35 } });
+  assert.deepEqual(query.body.filter, { property: "Legacy Property ID", unique_id: { equals: 35 } });
   assert.equal(crmCreate.properties["Property Code Entered"].rich_text[0].text.content, PROPERTY_CODE);
   assert.equal(brevo.attributes.PROPERTY_CODE, PROPERTY_CODE);
 });

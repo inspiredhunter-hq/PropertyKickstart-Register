@@ -79,6 +79,20 @@ function getText(prop) {
   return null;
 }
 
+function getLegacyPropertyIdNumber(prop) {
+  if (!prop) return null;
+  if (prop.type === "unique_id") {
+    const value = prop.unique_id || {};
+    const number = Number(value.number);
+    return String(value.prefix || "").toUpperCase() === "PKD" && Number.isSafeInteger(number)
+      ? number
+      : null;
+  }
+  // Retain compatibility with installations where the field is a plain number.
+  if (prop.type === "number" && Number.isSafeInteger(prop.number)) return prop.number;
+  return null;
+}
+
 function parsePropertyIdentifier(value) {
   const code = String(value || "").trim().toUpperCase();
   if (PROPERTY_CODE_PATTERN.test(code)) return { type: "current", code };
@@ -103,7 +117,7 @@ function isSafePropertyUrl(value) {
 async function findPipelinePage(token, identifier) {
   const filter = identifier.type === "current"
     ? { property: "Property Code", rich_text: { equals: identifier.code } }
-    : { property: "Legacy Property ID", number: { equals: identifier.number } };
+    : { property: "Legacy Property ID", unique_id: { equals: identifier.number } };
   const response = await notionRequest(
     `/data_sources/${PIPELINE_DATA_SOURCE_ID}/query`,
     token,
@@ -120,8 +134,7 @@ async function findPipelinePage(token, identifier) {
     const matchedCode = getText(props["Property Code"]);
     if (String(matchedCode || "").trim().toUpperCase() !== identifier.code) return null;
   } else {
-    const legacyNumber = getText(props["Legacy Property ID"]);
-    if (Number(legacyNumber) !== identifier.number) return null;
+    if (getLegacyPropertyIdNumber(props["Legacy Property ID"]) !== identifier.number) return null;
   }
   return page;
 }

@@ -88,6 +88,7 @@
   }
   input:focus { outline: 2px solid var(--gold); outline-offset: 1px; }
   .optional-tag { font-weight: normal; color: var(--text); font-size: 12px; }
+  .field-help { margin: 6px 0 0; color: var(--text); font-size: 13px; line-height: 1.45; }
   .error-text {
     display: none;
     color: var(--error);
@@ -181,8 +182,10 @@
         </div>
 
         <div class="field" id="field-property">
-          <label for="propertyCode">Property Registration ID <span class="optional-tag">(optional)</span></label>
-          <input type="text" id="propertyCode" name="propertyCode" autocomplete="off" placeholder="e.g. PKD-71">
+          <label for="propertyCode">Property code <span class="optional-tag">(optional)</span></label>
+          <input type="text" id="propertyCode" name="propertyCode" autocomplete="off" placeholder="e.g. BTL-NW-3GF2B" aria-describedby="property-code-help property-code-error">
+          <p class="field-help" id="property-code-help">Enter the property code shown on the property advert, for example BTL-NW-3GF2B.</p>
+          <div class="error-text" id="property-code-error">Enter a valid property code.</div>
         </div>
 
         <button type="submit" id="submit-btn">View the property details</button>
@@ -207,12 +210,16 @@
 <script>
 (function () {
   const params = new URLSearchParams(window.location.search);
-  const propertyCodeParam = (params.get("property") || "").trim();
+  const hasPropertyParam = params.has("property");
+  const propertyCodeParam = (params.get("property") || "").trim().toUpperCase();
   const sourceParam = (params.get("source") || "").trim();
   const campaignParam = (params.get("campaign") || "").trim();
   const utmSource = (params.get("utm_source") || "").trim();
   const utmMedium = (params.get("utm_medium") || "").trim();
   const utmCampaign = (params.get("utm_campaign") || "").trim();
+
+  const currentCodePattern = /^[A-Z]{2,3}-[A-Z]{2}-[A-Z0-9]{5}$/;
+  const legacyCodePattern = /^PKD-\d+$/;
 
   const propertyCodeInput = document.getElementById("propertyCode");
   const propertyContext = document.getElementById("property-context");
@@ -220,21 +227,34 @@
   const pcTitle = document.getElementById("pc-title");
   const pcMeta = document.getElementById("pc-meta");
   const pcUnavailable = document.getElementById("pc-unavailable");
+  const form = document.getElementById("registration-form");
+  const submitBtn = document.getElementById("submit-btn");
+  const errorBanner = document.getElementById("form-error-banner");
+  let propertyLookupState = hasPropertyParam ? "pending" : "not_requested";
 
-  let resolvedPropertyIsLive = false;
+  function showBanner(message) {
+    errorBanner.textContent = message;
+    errorBanner.classList.add("show");
+  }
 
-  if (propertyCodeParam) {
+  if (hasPropertyParam) {
     propertyCodeInput.value = propertyCodeParam;
-    // Hide the field visually since it's auto-carried — but keep it in the DOM
-    // so it still submits. Visitors arriving via a property link never need
-    // to type a reference manually.
+    // Keep the carried code in the form payload while avoiding a re-entry step.
     document.getElementById("field-property").style.display = "none";
+    submitBtn.disabled = true;
 
-    fetch("/.netlify/functions/lookup-property?property=" + encodeURIComponent(propertyCodeParam))
-      .then((r) => r.json())
-      .then((data) => {
-        if (data && data.found) {
-          resolvedPropertyIsLive = !!data.isLive;
+    if (!currentCodePattern.test(propertyCodeParam) && !legacyCodePattern.test(propertyCodeParam)) {
+      propertyLookupState = "failed";
+      showBanner("This property link is invalid. Please check the link or contact Property Kickstart.");
+    } else {
+      fetch("/.netlify/functions/lookup-property?property=" + encodeURIComponent(propertyCodeParam))
+        .then(async (response) => {
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.found) throw new Error("This property link could not be verified.");
+          return data;
+        })
+        .then((data) => {
+          propertyLookupState = "resolved";
           if (data.mainPhotoUrl) {
             pcPhoto.src = data.mainPhotoUrl;
             pcPhoto.style.display = "block";
@@ -244,21 +264,16 @@
           if (data.strategy) bits.push(data.strategy);
           pcTitle.textContent = data.propertyName || ("Property " + data.propertyCode);
           pcMeta.textContent = bits.join(" · ");
-          if (!data.isLive) {
-            pcUnavailable.style.display = "block";
-          }
+          if (!data.isLive) pcUnavailable.style.display = "block";
           propertyContext.classList.add("show");
-        }
-        // If not found: silently proceed as general registration, no error shown.
-      })
-      .catch(() => {
-        // Silent fallback to general registration on any lookup error.
-      });
+          submitBtn.disabled = false;
+        })
+        .catch(() => {
+          propertyLookupState = "failed";
+          showBanner("This property link could not be verified. Please try again later or contact Property Kickstart.");
+        });
+    }
   }
-
-  const form = document.getElementById("registration-form");
-  const submitBtn = document.getElementById("submit-btn");
-  const errorBanner = document.getElementById("form-error-banner");
 
   function setFieldError(fieldId, hasError) {
     document.getElementById(fieldId).classList.toggle("has-error", hasError);
@@ -274,11 +289,12 @@
 
     const firstName = document.getElementById("firstName").value.trim();
     const email = document.getElementById("email").value.trim();
-    const propertyCode = propertyCodeInput.value.trim();
+    const propertyCode = propertyCodeInput.value.trim().toUpperCase();
 
     let valid = true;
     setFieldError("field-firstName", false);
     setFieldError("field-email", false);
+    setFieldError("field-property", false);
 
     if (!firstName) {
       setFieldError("field-firstName", true);
@@ -286,6 +302,14 @@
     }
     if (!email || !isValidEmail(email)) {
       setFieldError("field-email", true);
+      valid = false;
+    }
+    if (hasPropertyParam && propertyLookupState !== "resolved") {
+      showBanner("This property link could not be verified. Please check the link or try again later.");
+      return;
+    }
+    if (propertyCode && !currentCodePattern.test(propertyCode) && !legacyCodePattern.test(propertyCode)) {
+      setFieldError("field-property", true);
       valid = false;
     }
     if (!valid) return;
@@ -318,6 +342,10 @@
           window.location.href = data.redirectTo;
           return;
         }
+        if (data.issue === "property_url_unavailable") {
+          document.querySelector("#confirmation h1").textContent = "Your details are registered.";
+          document.querySelector("#confirmation .intro").textContent = "We’ve recorded your interest, but can’t open this property listing right now. We’ll be in touch about similar opportunities.";
+        }
         document.getElementById("form-view").style.display = "none";
         document.getElementById("confirmation").classList.add("show");
       })
@@ -332,3 +360,4 @@
 </script>
 </body>
 </html>
+

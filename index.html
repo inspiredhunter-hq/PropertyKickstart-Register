@@ -40,6 +40,13 @@
     color: var(--gold);
     margin-bottom: 12px;
   }
+  .brand-logo {
+    display: block;
+    width: 88px;
+    height: 88px;
+    object-fit: contain;
+    margin: 0 auto 12px;
+  }
   h1 { font-size: 28px; line-height: 1.15; margin: 0 0 14px; color: var(--green); }
   .intro { font-size: 16px; line-height: 1.6; color: var(--text); margin-bottom: 24px; }
 
@@ -75,8 +82,9 @@
     margin-bottom: 6px;
     color: var(--green);
   }
+  .required-tag { font-weight: normal; color: var(--text); font-size: 12px; }
   .field { margin-bottom: 18px; }
-  input[type="text"], input[type="email"] {
+  input[type="text"], input[type="email"], input[type="tel"] {
     width: 100%;
     padding: 13px 14px;
     font-size: 16px;
@@ -97,6 +105,20 @@
   }
   .field.has-error input { border-color: var(--error); }
   .field.has-error .error-text { display: block; }
+  .consent-choice {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 4px 0 12px;
+  }
+  .consent-choice input {
+    width: 18px;
+    height: 18px;
+    margin: 1px 0 0;
+    flex: 0 0 auto;
+    accent-color: var(--green);
+  }
+  .consent-choice label { font-size: 14px; line-height: 1.45; font-weight: normal; margin: 0; }
 
   button[type="submit"] {
     width: 100%;
@@ -155,9 +177,10 @@
   <div class="card">
 
     <div id="form-view">
+      <img class="brand-logo" src="/assets/property-kickstart-logo.png" alt="Property Kickstart">
       <div class="eyebrow">Property Kickstart</div>
       <h1>Get the full property details</h1>
-      <p class="intro">Enter your details to view this opportunity and receive alerts about similar properties as they become available.</p>
+      <p class="intro">Enter your details to view this opportunity. You can also choose to receive alerts about similar properties.</p>
 
       <div class="property-context" id="property-context">
         <img id="pc-photo" alt="" style="display:none;">
@@ -166,19 +189,32 @@
         <div class="pc-unavailable" id="pc-unavailable" style="display:none;">This specific opportunity is no longer available — but we'll register your interest for similar properties.</div>
       </div>
 
-      <div class="form-error-banner" id="form-error-banner"></div>
+      <div class="form-error-banner" id="form-error-banner" role="alert" aria-live="assertive"></div>
 
-      <form id="registration-form">
+      <form id="registration-form" novalidate>
         <div class="field" id="field-firstName">
-          <label for="firstName">First name</label>
-          <input type="text" id="firstName" name="firstName" autocomplete="given-name" required>
+          <label for="firstName">First name <span class="required-tag">(required)</span></label>
+          <input type="text" id="firstName" name="firstName" autocomplete="given-name" aria-required="true" required>
           <div class="error-text">Please enter your first name.</div>
         </div>
 
+        <div class="field" id="field-lastName">
+          <label for="lastName">Last name <span class="required-tag">(required)</span></label>
+          <input type="text" id="lastName" name="lastName" autocomplete="family-name" aria-required="true" required>
+          <div class="error-text">Please enter your last name.</div>
+        </div>
+
         <div class="field" id="field-email">
-          <label for="email">Email address</label>
-          <input type="email" id="email" name="email" autocomplete="email" required>
+          <label for="email">Email address <span class="required-tag">(required)</span></label>
+          <input type="email" id="email" name="email" autocomplete="email" aria-required="true" required>
           <div class="error-text">Please enter a valid email address.</div>
+        </div>
+
+        <div class="field" id="field-mobile">
+          <label for="mobile">Mobile number <span class="required-tag">(required)</span></label>
+          <input type="tel" id="mobile" name="mobile" autocomplete="tel" inputmode="tel" placeholder="e.g. 07123 456789" aria-required="true" aria-describedby="mobile-help mobile-error" required>
+          <p class="field-help" id="mobile-help">Use a mobile number, including your country code if outside the UK.</p>
+          <div class="error-text" id="mobile-error">Please enter a valid mobile number.</div>
         </div>
 
         <div class="field" id="field-property">
@@ -190,17 +226,18 @@
 
         <button type="submit" id="submit-btn">View the property details</button>
 
-        <p class="consent-msg">
-          By continuing, you are also registering to receive alerts about similar Property Kickstart opportunities.
-          See our <a href="https://propertykickstart.co.uk/privacy" target="_blank" rel="noopener">Privacy Policy</a>.
-        </p>
+        <div class="consent-choice">
+          <input type="checkbox" id="marketingConsent" name="marketingConsent" value="yes">
+          <label for="marketingConsent">Email me alerts about similar Property Kickstart opportunities.</label>
+        </div>
+        <p class="consent-msg">You can view the property without signing up for email alerts. See our <a href="https://propertykickstart.co.uk/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</p>
       </form>
     </div>
 
     <div id="confirmation">
       <div class="eyebrow">Property Kickstart</div>
       <h1>You're registered.</h1>
-      <p class="intro">We'll now let you know when new Property Kickstart opportunities become available.</p>
+      <p class="intro">Your details have been registered.</p>
     </div>
 
   </div>
@@ -230,6 +267,7 @@
   const form = document.getElementById("registration-form");
   const submitBtn = document.getElementById("submit-btn");
   const errorBanner = document.getElementById("form-error-banner");
+  const marketingConsent = document.getElementById("marketingConsent");
   let propertyLookupState = hasPropertyParam ? "pending" : "not_requested";
 
   function showBanner(message) {
@@ -279,6 +317,13 @@
     document.getElementById(fieldId).classList.toggle("has-error", hasError);
   }
 
+  function normalizePhone(value) {
+    let phone = String(value || "").trim().replace(/[\s().-]/g, "");
+    if (phone.startsWith("00")) phone = "+" + phone.slice(2);
+    if (/^07\d{9}$/.test(phone)) phone = "+44" + phone.slice(1);
+    return /^\+[1-9]\d{6,14}$/.test(phone) ? phone : null;
+  }
+
   function isValidEmail(v) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
   }
@@ -288,20 +333,32 @@
     errorBanner.classList.remove("show");
 
     const firstName = document.getElementById("firstName").value.trim();
+    const lastName = document.getElementById("lastName").value.trim();
     const email = document.getElementById("email").value.trim();
+    const mobile = normalizePhone(document.getElementById("mobile").value);
     const propertyCode = propertyCodeInput.value.trim().toUpperCase();
 
     let valid = true;
     setFieldError("field-firstName", false);
+    setFieldError("field-lastName", false);
     setFieldError("field-email", false);
+    setFieldError("field-mobile", false);
     setFieldError("field-property", false);
 
     if (!firstName) {
       setFieldError("field-firstName", true);
       valid = false;
     }
+    if (!lastName) {
+      setFieldError("field-lastName", true);
+      valid = false;
+    }
     if (!email || !isValidEmail(email)) {
       setFieldError("field-email", true);
+      valid = false;
+    }
+    if (!mobile) {
+      setFieldError("field-mobile", true);
       valid = false;
     }
     if (hasPropertyParam && propertyLookupState !== "resolved") {
@@ -312,7 +369,21 @@
       setFieldError("field-property", true);
       valid = false;
     }
-    if (!valid) return;
+    if (!valid) {
+      if (!firstName || !lastName || !email || !document.getElementById("mobile").value.trim()) {
+        showBanner("Please enter your name, email and mobile number to continue.");
+      } else if (!isValidEmail(email)) {
+        showBanner("Please enter a valid email address.");
+      } else if (!mobile) {
+        showBanner("Please enter a valid mobile number, including your country code if outside the UK.");
+      } else {
+        showBanner("Please check the property code and try again.");
+      }
+      const firstInvalid = ["field-firstName", "field-lastName", "field-email", "field-mobile", "field-property"]
+        .find((fieldId) => document.getElementById(fieldId).classList.contains("has-error"));
+      if (firstInvalid) document.querySelector("#" + firstInvalid + " input").focus();
+      return;
+    }
 
     submitBtn.disabled = true;
     submitBtn.textContent = "Please wait…";
@@ -322,7 +393,10 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         firstName,
+        lastName,
         email,
+        mobile,
+        marketingConsent: marketingConsent.checked,
         propertyCode,
         source: sourceParam,
         campaign: campaignParam,
@@ -342,9 +416,14 @@
           window.location.href = data.redirectTo;
           return;
         }
+        document.querySelector("#confirmation .intro").textContent = marketingConsent.checked
+          ? "Your details have been registered. We’ll let you know when new Property Kickstart opportunities become available."
+          : "Your details have been registered. You can opt in to email alerts at any time.";
         if (data.issue === "property_url_unavailable") {
           document.querySelector("#confirmation h1").textContent = "Your details are registered.";
-          document.querySelector("#confirmation .intro").textContent = "We’ve recorded your interest, but can’t open this property listing right now. We’ll be in touch about similar opportunities.";
+          document.querySelector("#confirmation .intro").textContent = marketingConsent.checked
+            ? "We’ve recorded your interest, but can’t open this property listing right now. We’ll be in touch about similar opportunities."
+            : "We’ve recorded your interest, but can’t open this property listing right now. Please contact Property Kickstart if you need help.";
         }
         document.getElementById("form-view").style.display = "none";
         document.getElementById("confirmation").classList.add("show");

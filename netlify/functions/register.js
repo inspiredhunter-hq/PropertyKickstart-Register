@@ -43,6 +43,14 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+function normalizeMobile(value) {
+  let mobile = String(value || "").trim().replace(/[\s().-]/g, "");
+  if (mobile.startsWith("00")) mobile = "+" + mobile.slice(2);
+  // Convert a UK mobile in national format to E.164 for storage and sync.
+  if (/^07\d{9}$/.test(mobile)) mobile = "+44" + mobile.slice(1);
+  return /^\+[1-9]\d{6,14}$/.test(mobile) ? mobile : null;
+}
+
 async function notionRequest(path, token, options = {}) {
   const res = await fetch(`${NOTION_API_BASE}${path}`, {
     ...options,
@@ -207,7 +215,11 @@ exports.handler = async (event) => {
   }
 
   const firstName = String(data.firstName || "").trim();
+  const lastName = String(data.lastName || "").trim();
   const email = String(data.email || "").trim().toLowerCase();
+  const mobileInput = String(data.mobile || "").trim();
+  const mobile = normalizeMobile(mobileInput);
+  const marketingConsent = data.marketingConsent === true;
   const propertyCodeRaw = String(data.propertyCode || "").trim();
   const submittedPropertyCode = propertyCodeRaw ? propertyCodeRaw.toUpperCase() : "";
   const source = String(data.source || "").trim();
@@ -217,15 +229,22 @@ exports.handler = async (event) => {
   const utmCampaign = String(data.utmCampaign || "").trim();
   const landingPageUrl = String(data.landingPageUrl || "").trim();
 
-  if (!firstName || !email) {
+  if (!firstName || !lastName || !email || !mobileInput) {
     return {
       statusCode: 400,
       headers,
-      body: JSON.stringify({ error: "First name and email are required" }),
+      body: JSON.stringify({ error: "Please enter your name, email and mobile number to continue." }),
     };
   }
   if (!isValidEmail(email)) {
-    return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid email address" }) };
+    return { statusCode: 400, headers, body: JSON.stringify({ error: "Please enter a valid email address." }) };
+  }
+  if (!mobile) {
+    return {
+      statusCode: 400,
+      headers,
+      body: JSON.stringify({ error: "Please enter a valid mobile number, including your country code if outside the UK." }),
+    };
   }
   const propertyIdentifier = submittedPropertyCode ? parsePropertyIdentifier(submittedPropertyCode) : null;
   if (submittedPropertyCode && !propertyIdentifier) {
@@ -249,8 +268,8 @@ exports.handler = async (event) => {
       // The landing-page URL is attribution data only; it is never a redirect target.
     }
   }
-  if (!process.env.NOTION_TOKEN || !process.env.PK_Register_Brevo_Key) {
-    console.error("Missing NOTION_TOKEN or PK_Register_Brevo_Key env vars");
+  if (!process.env.NOTION_TOKEN) {
+    console.error("Missing required NOTION_TOKEN env var");
     return { statusCode: 500, headers, body: JSON.stringify({ error: "Server misconfigured" }) };
   }
 
@@ -307,25 +326,34 @@ exports.handler = async (event) => {
   // Step 2: upsert Brevo contact
   let brevoSynced = false;
   let brevoError = null;
-  try {
-    await upsertBrevoContact(process.env.PK_Register_Brevo_Key, {
-      email,
-      attributes: {
-        FIRSTNAME: firstName,
-        EMAIL_CONSENT: true,
-        OPT_IN: true,
-        PROPERTY_CODE: propertyCode,
-        PROPERTY_URL: propertyUrl || "",
-        SOURCE_PLATFORM: source || "",
-        CAMPAIGN_ID: campaign || "",
-      },
-      listIds: [BREVO_LIST_ID],
-      updateEnabled: true,
-    });
-    brevoSynced = true;
-  } catch (err) {
-    console.error("Brevo sync failed:", err);
-    brevoError = err.message;
+  if (marketingConsent && process.env.PK_Register_Brevo_Key) {
+    try {
+      await upsertBrevoContact(process.env.PK_Register_Brevo_Key, {
+        email,
+        attributes: {
+          FIRSTNAME: firstName,
+          LASTNAME: lastName,
+          SMS: mobile,
+          EMAIL_CONSENT: true,
+          OPT_IN: true,
+          PROPERTY_CODE: propertyCode,
+          PROPERTY_URL: propertyUrl || "",
+          SOURCE_PLATFORM: source || "",
+          CAMPAIGN_ID: campaign || "",
+        },
+        listIds: [BREVO_LIST_ID],
+        updateEnabled: true,
+      });
+      brevoSynced = true;
+    } catch (err) {
+      console.error("Brevo sync failed:", err);
+      brevoError = err.message;
+    }
+  } else if (marketingConsent) {
+    // A marketing integration issue must never block the requested property
+    // redirect or general registration. The consent choice is still recorded.
+    console.error("Brevo opt-in sync skipped because PK_Register_Brevo_Key is missing");
+    brevoError = "missing_brevo_key";
   }
 
   // Step 3: find-or-create the investor record in Investors DB
@@ -335,8 +363,11 @@ exports.handler = async (event) => {
     // Find-or-update by email rather than always creating a new investor row.
     const existing = await findInvestorByEmail(notionToken, email);
     const properties = {
-      "Full Name": { title: [{ text: { content: firstName } }] },
+      "Full Name": { title: [{ text: { content: [firstName, lastName].join(" ") } }] },
+      "First Name": { rich_text: [{ text: { content: firstName } }] },
+      "Last Name": { rich_text: [{ text: { content: lastName } }] },
       Email: { email },
+      Phone: { phone_number: mobile },
       "Property Code Entered": { rich_text: [{ text: { content: propertyCode } }] },
       Source: { select: { name: "Website" } },
       "Campaign ID": { rich_text: [{ text: { content: campaign } }] },
@@ -347,7 +378,7 @@ exports.handler = async (event) => {
       "Property URL at Submission": propertyUrl ? { url: propertyUrl } : undefined,
       "Redirected To": redirectTo ? { url: redirectTo } : undefined,
       "Registration Type": { select: { name: registrationType } },
-      "Consent Given": { checkbox: true },
+      "Consent Given": { checkbox: marketingConsent },
       "Submitted At": { date: { start: new Date().toISOString() } },
       "Brevo Contact Synced": { checkbox: brevoSynced },
     };

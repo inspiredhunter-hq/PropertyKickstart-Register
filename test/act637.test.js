@@ -481,3 +481,17 @@ test("missing required form details show a short prompt and never submit", async
   assert.equal(page.elements.firstName.focused, true);
   assert.equal(page.elements["field-property"].classList.contains("has-error"), false);
 });
+
+test("an unavailable listing does not promise follow-up without marketing consent", async () => {
+  const page = await runRegistrationPage("", async () => ({
+    ok: true,
+    json: async () => ({ success: true, issue: "property_url_unavailable" }),
+  }));
+  page.elements.firstName.value = "Hanna";
+  page.elements.lastName.value = "Example";
+  page.elements.email.value = "hanna@example.test";
+  page.elements.mobile.value = "07123 456789";
+  page.elements["registration-form"].listeners.submit({ preventDefault() {} });
+  await new Promise(setImmediate);
+  assert.equal(page.confirmationIntro.textContent, "We’ve recorded your interest, but can’t open this property listing right now. Please contact Property Kickstart if you need help.");
+});

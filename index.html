@@ -421,7 +421,9 @@
           : "Your details have been registered. You can opt in to email alerts at any time.";
         if (data.issue === "property_url_unavailable") {
           document.querySelector("#confirmation h1").textContent = "Your details are registered.";
-          document.querySelector("#confirmation .intro").textContent = "We’ve recorded your interest, but can’t open this property listing right now. We’ll be in touch about similar opportunities.";
+          document.querySelector("#confirmation .intro").textContent = marketingConsent.checked
+            ? "We’ve recorded your interest, but can’t open this property listing right now. We’ll be in touch about similar opportunities."
+            : "We’ve recorded your interest, but can’t open this property listing right now. Please contact Property Kickstart if you need help.";
         }
         document.getElementById("form-view").style.display = "none";
         document.getElementById("confirmation").classList.add("show");

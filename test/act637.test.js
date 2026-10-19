@@ -181,13 +181,24 @@ function registerMockFetch({ pipelinePage = samplePipelinePage(), existingInvest
 }
 
 function registerEvent(data) {
-  return { httpMethod: "POST", body: JSON.stringify({ firstName: "Hanna", email: "hanna@example.test", ...data }) };
+  return {
+    httpMethod: "POST",
+    body: JSON.stringify({
+      firstName: "Hanna",
+      lastName: "Example",
+      email: "hanna@example.test",
+      mobile: "07123 456789",
+      marketingConsent: false,
+      ...data,
+    }),
+  };
 }
 
 test("registration stores canonical code, CRM relation and attribution, then returns only the matched listing URL", async () => {
   const calls = registerMockFetch();
   const result = await register(registerEvent({
     propertyCode: " ha-nw-8gq5c ",
+    marketingConsent: true,
     source: "linkedin",
     campaign: "october-property-post",
     utmSource: "linkedin",
@@ -208,9 +219,17 @@ test("registration stores canonical code, CRM relation and attribution, then ret
   assert.deepEqual(pipelineQuery.body.filter, { property: "Property Code", rich_text: { equals: PROPERTY_CODE } });
   assert.equal(brevo.attributes.PROPERTY_CODE, PROPERTY_CODE);
   assert.equal(brevo.attributes.PROPERTY_URL, PROPERTY_URL);
+  assert.equal(brevo.attributes.LASTNAME, "Example");
+  assert.equal(brevo.attributes.SMS, "+447123456789");
+  assert.equal(brevo.attributes.EMAIL_CONSENT, true);
   assert.equal(brevo.attributes.SOURCE_PLATFORM, "linkedin");
   assert.equal(brevo.attributes.CAMPAIGN_ID, "october-property-post");
   assert.equal(crmProperties["Property Code Entered"].rich_text[0].text.content, PROPERTY_CODE);
+  assert.equal(crmProperties["Full Name"].title[0].text.content, "Hanna Example");
+  assert.equal(crmProperties["First Name"].rich_text[0].text.content, "Hanna");
+  assert.equal(crmProperties["Last Name"].rich_text[0].text.content, "Example");
+  assert.equal(crmProperties.Phone.phone_number, "+447123456789");
+  assert.equal(crmProperties["Consent Given"].checkbox, true);
   assert.deepEqual(crmProperties["Deals Shared"].relation, [{ id: "pipeline-page-1" }]);
   assert.equal(crmProperties["UTM Source"].rich_text[0].text.content, "linkedin");
   assert.equal(crmProperties["UTM Medium"].rich_text[0].text.content, "social");
@@ -245,7 +264,7 @@ test("a property-specific landing URL cannot be submitted as a general registrat
 
 test("legacy registration resolves the unique ID and stores the canonical Property Code", async () => {
   const calls = registerMockFetch();
-  const result = await register(registerEvent({ propertyCode: "PKD-35", source: "whatsapp" }));
+  const result = await register(registerEvent({ propertyCode: "PKD-35", source: "whatsapp", marketingConsent: true }));
   const query = calls.find((call) => call.url.includes(`/data_sources/${PIPELINE_ID}/query`));
   const crmCreate = calls.find((call) => call.url === "https://api.notion.com/v1/pages").body;
   const brevo = calls.find((call) => call.url === "https://api.brevo.com/v3/contacts").body;
@@ -296,6 +315,49 @@ test("no-code registration remains a genuine general alert registration", async 
   assert.equal(body.registrationType, "General Alert Only");
   assert.equal(body.redirectTo, null);
   assert.equal(calls.some((call) => call.url.includes(`/data_sources/${PIPELINE_ID}/query`)), false);
+  assert.equal(calls.some((call) => call.url === "https://api.brevo.com/v3/contacts"), false);
+  const crmCreate = calls.find((call) => call.url === "https://api.notion.com/v1/pages").body;
+  assert.equal(crmCreate.properties["Consent Given"].checkbox, false);
+  assert.equal(crmCreate.properties.Phone.phone_number, "+447123456789");
+});
+
+test("server rejects missing required fields and invalid mobile numbers before writing", async () => {
+  const cases = [
+    [{ firstName: "" }, /name, email and mobile/],
+    [{ lastName: "" }, /name, email and mobile/],
+    [{ email: "" }, /name, email and mobile/],
+    [{ mobile: "" }, /name, email and mobile/],
+    [{ mobile: "not a mobile number" }, /valid mobile number/],
+  ];
+  for (const [overrides, expectedMessage] of cases) {
+    let calls = 0;
+    global.fetch = async () => { calls += 1; return jsonResponse({}); };
+    const result = await register(registerEvent(overrides));
+    assert.equal(result.statusCode, 400);
+    assert.match(JSON.parse(result.body).error, expectedMessage);
+    assert.equal(calls, 0);
+  }
+});
+
+test("UK national mobile is normalized and stored as an international number", async () => {
+  const calls = registerMockFetch();
+  const result = await register(registerEvent({ mobile: "07123 456 789", propertyCode: "" }));
+  const crm = calls.find((call) => call.url === "https://api.notion.com/v1/pages").body;
+  assert.equal(result.statusCode, 200);
+  assert.equal(crm.properties.Phone.phone_number, "+447123456789");
+});
+
+test("a Brevo opt-in sync problem cannot block the requested listing redirect", async () => {
+  delete process.env.PK_Register_Brevo_Key;
+  const calls = registerMockFetch();
+  const result = await register(registerEvent({ propertyCode: PROPERTY_CODE, marketingConsent: true }));
+  const body = JSON.parse(result.body);
+  const crmCreate = calls.find((call) => call.url === "https://api.notion.com/v1/pages").body;
+  assert.equal(result.statusCode, 200);
+  assert.equal(body.redirectTo, PROPERTY_URL);
+  assert.equal(crmCreate.properties["Consent Given"].checkbox, true);
+  assert.equal(crmCreate.properties["Brevo Contact Synced"].checkbox, false);
+  assert.equal(calls.some((call) => call.url === "https://api.brevo.com/v3/contacts"), false);
 });
 
 function createElement() {
@@ -305,6 +367,8 @@ function createElement() {
     textContent: "",
     src: "",
     disabled: false,
+    checked: false,
+    focused: false,
     style: {},
     listeners: {},
     classList: {
@@ -314,17 +378,23 @@ function createElement() {
       contains: (name) => classes.has(name),
     },
     addEventListener: function (name, handler) { this.listeners[name] = handler; },
+    focus: function () { this.focused = true; },
   };
 }
 
 async function runRegistrationPage(search, fetchImpl) {
-  const ids = ["propertyCode", "property-context", "pc-photo", "pc-title", "pc-meta", "pc-unavailable", "registration-form", "submit-btn", "form-error-banner", "firstName", "email", "field-firstName", "field-email", "field-property", "form-view", "confirmation"];
+  const ids = ["propertyCode", "property-context", "pc-photo", "pc-title", "pc-meta", "pc-unavailable", "registration-form", "submit-btn", "form-error-banner", "firstName", "lastName", "email", "mobile", "marketingConsent", "field-firstName", "field-lastName", "field-email", "field-mobile", "field-property", "form-view", "confirmation"];
   const elements = Object.fromEntries(ids.map((id) => [id, createElement()]));
   const confirmationTitle = createElement();
   const confirmationIntro = createElement();
   const document = {
     getElementById: (id) => elements[id],
-    querySelector: (selector) => selector === "#confirmation h1" ? confirmationTitle : confirmationIntro,
+    querySelector: (selector) => {
+      if (selector === "#confirmation h1") return confirmationTitle;
+      if (selector === "#confirmation .intro") return confirmationIntro;
+      const match = selector.match(/^#(field-[^ ]+) input$/);
+      return match ? elements[match[1].replace("field-", "")] : confirmationIntro;
+    },
   };
   const window = { location: { search, href: "https://register.propertykickstart.co.uk/" } };
   const html = fs.readFileSync(path.join(__dirname, "../index.html"), "utf8");
@@ -348,11 +418,17 @@ test("property-specific page auto-carries a normalised code and redirects after 
   assert.equal(page.elements["field-property"].style.display, "none");
   assert.equal(page.elements["submit-btn"].disabled, false);
   page.elements.firstName.value = "Hanna";
+  page.elements.lastName.value = "Example";
   page.elements.email.value = "hanna@example.test";
+  page.elements.mobile.value = "07123 456789";
+  page.elements.marketingConsent.checked = true;
   page.elements["registration-form"].listeners.submit({ preventDefault() {} });
   await new Promise(setImmediate);
   const submission = JSON.parse(calls.find((call) => call.url.endsWith("/register")).options.body);
   assert.equal(submission.propertyCode, PROPERTY_CODE);
+  assert.equal(submission.lastName, "Example");
+  assert.equal(submission.mobile, "+447123456789");
+  assert.equal(submission.marketingConsent, true);
   assert.equal(submission.source, "instagram");
   assert.equal(submission.campaign, "autumn");
   assert.equal(submission.utmSource, "instagram");
@@ -365,7 +441,9 @@ test("invalid property-specific route is blocked instead of becoming a general r
   let calls = 0;
   const page = await runRegistrationPage("?property=not-a-property-code", async () => { calls += 1; return jsonResponse({}); });
   page.elements.firstName.value = "Hanna";
+  page.elements.lastName.value = "Example";
   page.elements.email.value = "hanna@example.test";
+  page.elements.mobile.value = "07123 456789";
   page.elements["registration-form"].listeners.submit({ preventDefault() {} });
   assert.equal(calls, 0);
   assert.equal(page.elements["submit-btn"].disabled, true);
@@ -375,7 +453,31 @@ test("invalid property-specific route is blocked instead of becoming a general r
 test("mobile layout viewport and current Property code wording are present", () => {
   const html = fs.readFileSync(path.join(__dirname, "../index.html"), "utf8");
   assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1\.0">/);
+  assert.match(html, /id="firstName"[^>]*required/);
+  assert.match(html, /id="lastName"[^>]*required/);
+  assert.match(html, /id="email"[^>]*required/);
+  assert.match(html, /id="mobile"[^>]*required/);
   assert.match(html, /<label for="propertyCode">Property code/);
   assert.match(html, /placeholder="e\.g\. BTL-NW-3GF2B"/);
+  assert.doesNotMatch(html, /id="propertyCode"[^>]*required/);
+  assert.match(html, /<input type="checkbox" id="marketingConsent"[^>]*>/);
+  assert.doesNotMatch(html, /<input type="checkbox" id="marketingConsent"[^>]*required/);
+  assert.equal(fs.existsSync(path.join(__dirname, "../assets/property-kickstart-logo.png")), true);
   assert.doesNotMatch(html, /Property Registration ID|PKD-71/);
+});
+
+test("missing required form details show a short prompt and never submit", async () => {
+  let registerCalls = 0;
+  const page = await runRegistrationPage("", async () => {
+    registerCalls += 1;
+    return { ok: true, json: async () => ({ success: true }) };
+  });
+  page.elements["registration-form"].listeners.submit({ preventDefault() {} });
+  assert.equal(registerCalls, 0);
+  assert.equal(page.elements["form-error-banner"].textContent, "Please enter your name, email and mobile number to continue.");
+  assert.equal(page.elements["field-firstName"].classList.contains("has-error"), true);
+  assert.equal(page.elements["field-lastName"].classList.contains("has-error"), true);
+  assert.equal(page.elements["field-mobile"].classList.contains("has-error"), true);
+  assert.equal(page.elements.firstName.focused, true);
+  assert.equal(page.elements["field-property"].classList.contains("has-error"), false);
 });

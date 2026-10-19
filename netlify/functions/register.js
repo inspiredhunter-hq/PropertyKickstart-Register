@@ -19,11 +19,8 @@
 // query/create/update endpoints work correctly regardless of whether the
 // parent database is single- or multi-source.
 //
-// IMPORTANT: "Property Code" is a Notion `unique_id` property (Notion's
-// auto-increment ID type, e.g. renders as "PKD-71"), NOT a rich_text field.
-// It must be filtered with { unique_id: { equals: <number> } }, using only
-// the numeric suffix. Confirmed against the live data source schema
-// (fefec549-07c4-46a6-b932-cd05a38e0e92) on 2026-08-03.
+// Property Code is the canonical text identifier. Legacy Property ID is a
+// separate numeric field queried only for explicit PKD-XX compatibility.
 //
 // Required environment variables (set in Netlify site settings):
 //   NOTION_TOKEN            - Notion internal integration secret
@@ -32,14 +29,15 @@
 const NOTION_API_VERSION = "2025-09-03";
 const NOTION_API_BASE = "https://api.notion.com/v1";
 
-// Property Deals Pipeline's main data source (confirmed via live record:
-// 138 Hainton Avenue, Grimsby, Property Code PKD-71, this data source ID).
+// Property Deals Pipeline's main data source.
 const PIPELINE_DATA_SOURCE_ID = "fefec549-07c4-46a6-b932-cd05a38e0e92";
 // Investors DB is the CRM destination for all registrations (not a separate
 // log) — see ACT-572 for the decision to fold registrations into the
 // existing Investors DB rather than a standalone Property Registrations DB.
 const INVESTORS_DATA_SOURCE_ID = "0c8ed56c-8c78-40ba-9f44-b8e8c97d0aec";
 const BREVO_LIST_ID = 8; // "Registrations - Website"
+const PROPERTY_CODE_PATTERN = /^[A-Z]{2,3}-[A-Z]{2}-[A-Z0-9]{5}$/;
+const LEGACY_PROPERTY_CODE_PATTERN = /^PKD-(\d+)$/;
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -72,6 +70,7 @@ function getText(prop) {
   if (prop.type === "rich_text") return (prop.rich_text || []).map((t) => t.plain_text).join("");
   if (prop.type === "select") return prop.select ? prop.select.name : null;
   if (prop.type === "url") return prop.url;
+  if (prop.type === "number") return prop.number;
   if (prop.type === "unique_id") {
     if (!prop.unique_id) return null;
     const { prefix, number } = prop.unique_id;
@@ -80,31 +79,64 @@ function getText(prop) {
   return null;
 }
 
-// Parses an incoming property code like "PKD-71", "PKD71", or "71" down to
-// just the numeric suffix required by the unique_id filter. Returns null if
-// no numeric portion can be found.
-function parsePropertyCodeNumber(code) {
-  const match = String(code).match(/(\d+)\s*$/);
-  return match ? parseInt(match[1], 10) : null;
+function getLegacyPropertyIdNumber(prop) {
+  if (!prop) return null;
+  if (prop.type === "unique_id") {
+    const value = prop.unique_id || {};
+    const number = Number(value.number);
+    return String(value.prefix || "").toUpperCase() === "PKD" && Number.isSafeInteger(number)
+      ? number
+      : null;
+  }
+  // Retain compatibility with installations where the field is a plain number.
+  if (prop.type === "number" && Number.isSafeInteger(prop.number)) return prop.number;
+  return null;
 }
 
-async function findPipelinePage(token, code) {
-  const codeNumber = parsePropertyCodeNumber(code);
-  if (codeNumber === null) return null;
+function parsePropertyIdentifier(value) {
+  const code = String(value || "").trim().toUpperCase();
+  if (PROPERTY_CODE_PATTERN.test(code)) return { type: "current", code };
+  const legacyMatch = code.match(LEGACY_PROPERTY_CODE_PATTERN);
+  if (legacyMatch) return { type: "legacy", code, number: Number(legacyMatch[1]) };
+  return null;
+}
 
+function isSafePropertyUrl(value) {
+  if (!value || typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    const allowedHosts = new Set(["www.propertykickstart.co.uk", "propertykickstart.co.uk"]);
+    if (url.protocol !== "https:" || !allowedHosts.has(url.hostname) || !/^\/listing\/[A-Za-z0-9_-]+\/?$/.test(url.pathname)) return null;
+    if (url.username || url.password || url.port) return null;
+    return `${url.origin}${url.pathname}`;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function findPipelinePage(token, identifier) {
+  const filter = identifier.type === "current"
+    ? { property: "Property Code", rich_text: { equals: identifier.code } }
+    : { property: "Legacy Property ID", unique_id: { equals: identifier.number } };
   const response = await notionRequest(
     `/data_sources/${PIPELINE_DATA_SOURCE_ID}/query`,
     token,
     {
       method: "POST",
-      body: JSON.stringify({
-        filter: { property: "Property Code", unique_id: { equals: codeNumber } },
-        page_size: 1,
-      }),
+      body: JSON.stringify({ filter, page_size: 1 }),
     }
   );
-  if (!response.results || response.results.length === 0) return null;
-  return response.results[0];
+  const page = (response.results || [])[0];
+  if (!page) return null;
+
+  const props = page.properties || {};
+  if (identifier.type === "current") {
+    const matchedCode = getText(props["Property Code"]);
+    if (String(matchedCode || "").trim().toUpperCase() !== identifier.code) return null;
+  } else {
+    if (getLegacyPropertyIdNumber(props["Legacy Property ID"]) !== identifier.number) return null;
+  }
+  return page;
 }
 
 async function findInvestorByEmail(token, email) {
@@ -174,16 +206,16 @@ exports.handler = async (event) => {
     return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid JSON" }) };
   }
 
-  const firstName = (data.firstName || "").trim();
-  const email = (data.email || "").trim().toLowerCase();
-  const propertyCodeRaw = (data.propertyCode || "").trim();
-  const propertyCode = propertyCodeRaw ? propertyCodeRaw.toUpperCase() : "";
-  const source = (data.source || "").trim();
-  const campaign = (data.campaign || "").trim();
-  const utmSource = (data.utmSource || "").trim();
-  const utmMedium = (data.utmMedium || "").trim();
-  const utmCampaign = (data.utmCampaign || "").trim();
-  const landingPageUrl = (data.landingPageUrl || "").trim();
+  const firstName = String(data.firstName || "").trim();
+  const email = String(data.email || "").trim().toLowerCase();
+  const propertyCodeRaw = String(data.propertyCode || "").trim();
+  const submittedPropertyCode = propertyCodeRaw ? propertyCodeRaw.toUpperCase() : "";
+  const source = String(data.source || "").trim();
+  const campaign = String(data.campaign || "").trim();
+  const utmSource = String(data.utmSource || "").trim();
+  const utmMedium = String(data.utmMedium || "").trim();
+  const utmCampaign = String(data.utmCampaign || "").trim();
+  const landingPageUrl = String(data.landingPageUrl || "").trim();
 
   if (!firstName || !email) {
     return {
@@ -194,6 +226,28 @@ exports.handler = async (event) => {
   }
   if (!isValidEmail(email)) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid email address" }) };
+  }
+  const propertyIdentifier = submittedPropertyCode ? parsePropertyIdentifier(submittedPropertyCode) : null;
+  if (submittedPropertyCode && !propertyIdentifier) {
+    return { statusCode: 400, headers, body: JSON.stringify({ error: "Enter a valid property code." }) };
+  }
+  if (landingPageUrl) {
+    try {
+      const landingUrl = new URL(landingPageUrl);
+      if (landingUrl.searchParams.has("property")) {
+        const landingCode = String(landingUrl.searchParams.get("property") || "").trim().toUpperCase();
+        const landingIdentifier = parsePropertyIdentifier(landingCode);
+        if (!propertyIdentifier || !landingIdentifier || landingIdentifier.code !== propertyIdentifier.code) {
+          return {
+            statusCode: 400,
+            headers,
+            body: JSON.stringify({ error: "This property link is incomplete or no longer valid." }),
+          };
+        }
+      }
+    } catch (_) {
+      // The landing-page URL is attribution data only; it is never a redirect target.
+    }
   }
   if (!process.env.NOTION_TOKEN || !process.env.PK_Register_Brevo_Key) {
     console.error("Missing NOTION_TOKEN or PK_Register_Brevo_Key env vars");
@@ -207,19 +261,46 @@ exports.handler = async (event) => {
   let propertyUrl = null;
   let isLive = false;
   let registrationType = "General Alert Only";
+  let issue = null;
+  let propertyCode = "";
 
-  if (propertyCode) {
+  if (propertyIdentifier) {
     try {
-      pipelinePage = await findPipelinePage(notionToken, propertyCode);
-      if (pipelinePage) {
-        const availability = getText(pipelinePage.properties["Availability"]);
-        propertyUrl = getText(pipelinePage.properties["Property URL"]);
-        isLive = availability === "Available";
-        registrationType = "Property-Specific";
-      }
+      pipelinePage = await findPipelinePage(notionToken, propertyIdentifier);
     } catch (err) {
       console.error("Pipeline lookup failed during registration:", err.status, err.message);
-      // Continue as general registration rather than failing the whole submit
+      return {
+        statusCode: 503,
+        headers,
+        body: JSON.stringify({ error: "We couldn't verify this property code. Please try again shortly." }),
+      };
+    }
+    if (!pipelinePage) {
+      return {
+        statusCode: 404,
+        headers,
+        body: JSON.stringify({ error: "We couldn't find this property code. Please check the link and try again." }),
+      };
+    }
+
+    const pipelineProperties = pipelinePage.properties || {};
+    const canonicalCode = String(getText(pipelineProperties["Property Code"]) || "").trim().toUpperCase();
+    if (!PROPERTY_CODE_PATTERN.test(canonicalCode)) {
+      console.error("Matched property has no valid canonical Property Code:", pipelinePage.id);
+      return {
+        statusCode: 409,
+        headers,
+        body: JSON.stringify({ error: "This property link needs attention. Please try again later." }),
+      };
+    }
+    propertyCode = canonicalCode;
+    const availability = getText(pipelineProperties["Availability"]);
+    propertyUrl = isSafePropertyUrl(getText(pipelineProperties["Property URL"]));
+    isLive = availability === "Available";
+    registrationType = "Property-Specific";
+    if (!propertyUrl) {
+      issue = "property_url_unavailable";
+      console.error("Matched property is missing a safe listing URL:", { propertyCode, pageId: pipelinePage.id });
     }
   }
 
@@ -233,7 +314,7 @@ exports.handler = async (event) => {
         FIRSTNAME: firstName,
         EMAIL_CONSENT: true,
         OPT_IN: true,
-        PROPERTY_CODE: propertyCode || "",
+        PROPERTY_CODE: propertyCode,
         PROPERTY_URL: propertyUrl || "",
         SOURCE_PLATFORM: source || "",
         CAMPAIGN_ID: campaign || "",
@@ -251,10 +332,12 @@ exports.handler = async (event) => {
   const redirectTo = isLive && propertyUrl ? propertyUrl : null;
   let notionError = null;
   try {
+    // Find-or-update by email rather than always creating a new investor row.
+    const existing = await findInvestorByEmail(notionToken, email);
     const properties = {
       "Full Name": { title: [{ text: { content: firstName } }] },
       Email: { email },
-      "Property Code Entered": { rich_text: [{ text: { content: propertyCodeRaw } }] },
+      "Property Code Entered": { rich_text: [{ text: { content: propertyCode } }] },
       Source: { select: { name: "Website" } },
       "Campaign ID": { rich_text: [{ text: { content: campaign } }] },
       "UTM Source": { rich_text: [{ text: { content: utmSource } }] },
@@ -269,13 +352,14 @@ exports.handler = async (event) => {
       "Brevo Contact Synced": { checkbox: brevoSynced },
     };
     if (pipelinePage) {
-      properties["Deals Shared"] = { relation: [{ id: pipelinePage.id }] };
+      const existingDealIds = (existing && existing.properties && existing.properties["Deals Shared"] && existing.properties["Deals Shared"].relation || [])
+        .map((relation) => relation.id)
+        .filter(Boolean);
+      const dealIds = Array.from(new Set([...existingDealIds, pipelinePage.id]));
+      properties["Deals Shared"] = { relation: dealIds.map((id) => ({ id })) };
     }
     // Strip undefined keys (Notion API rejects undefined values)
     Object.keys(properties).forEach((k) => properties[k] === undefined && delete properties[k]);
-
-    // Find-or-update by email rather than always creating a new investor row.
-    const existing = await findInvestorByEmail(notionToken, email);
 
     if (existing) {
       await notionRequest(`/pages/${existing.id}`, notionToken, {
@@ -316,7 +400,9 @@ exports.handler = async (event) => {
       redirectTo, // null if no live property resolved
       isLive,
       registrationType,
+      issue,
     }),
   };
 };
+
 

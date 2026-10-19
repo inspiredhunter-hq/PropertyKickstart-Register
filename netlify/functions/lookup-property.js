@@ -1,6 +1,7 @@
 // netlify/functions/lookup-property.js
 //
-// Looks up a Property Deals Pipeline record by Property Code (e.g. "PKD-71")
+// Looks up a Property Deals Pipeline record by its canonical Property Code
+// (e.g. "HA-NW-QKYUH"). Legacy PKD links use a separate compatibility query.
 // and returns ONLY safe, public-facing fields. Never returns financials,
 // internal notes, query status, or anything PDF-derived.
 //
@@ -17,21 +18,17 @@
 // shared/granted access to the Property Deals Pipeline database in Notion
 // (via its ••• menu → Connections → PK Register Site).
 //
-// IMPORTANT: "Property Code" is a Notion `unique_id` property (Notion's
-// auto-increment ID type, e.g. renders as "PKD-71"), NOT a rich_text field.
-// It must be filtered with { unique_id: { equals: <number> } }, using only
-// the numeric suffix (e.g. 71, not "PKD-71" or "PKD71"). Confirmed against
-// the live data source schema (fefec549-07c4-46a6-b932-cd05a38e0e92) on
-// 2026-08-03 — Property Code has type "unique_id" (internal alias
-// "auto_increment_id"), backed by an integer column.
+// Property Code is the canonical text field. Legacy Property ID is a separate
+// numeric field and is queried only for an explicit PKD-XX compatibility link.
 
 const NOTION_API_VERSION = "2025-09-03";
 const NOTION_API_BASE = "https://api.notion.com/v1";
 
 // Property Deals Pipeline's main data source (the "New Deals"/active deals
-// data source — confirmed via a live record: 138 Hainton Avenue, Grimsby,
-// Property Code PKD-71, this data source ID).
+// data source).
 const PIPELINE_DATA_SOURCE_ID = "fefec549-07c4-46a6-b932-cd05a38e0e92";
+const PROPERTY_CODE_PATTERN = /^[A-Z]{2,3}-[A-Z]{2}-[A-Z0-9]{5}$/;
+const LEGACY_PROPERTY_CODE_PATTERN = /^PKD-(\d+)$/;
 
 async function notionRequest(path, token, options = {}) {
   const res = await fetch(`${NOTION_API_BASE}${path}`, {
@@ -70,12 +67,62 @@ function getText(prop) {
   return null;
 }
 
-// Parses an incoming property code like "PKD-71", "PKD71", or "71" down to
-// just the numeric suffix required by the unique_id filter. Returns null if
-// no numeric portion can be found.
-function parsePropertyCodeNumber(code) {
-  const match = String(code).match(/(\d+)\s*$/);
-  return match ? parseInt(match[1], 10) : null;
+function getLegacyPropertyIdNumber(prop) {
+  if (!prop) return null;
+  if (prop.type === "unique_id") {
+    const value = prop.unique_id || {};
+    const number = Number(value.number);
+    return String(value.prefix || "").toUpperCase() === "PKD" && Number.isSafeInteger(number)
+      ? number
+      : null;
+  }
+  // Retain compatibility with installations where the field is a plain number.
+  if (prop.type === "number" && Number.isSafeInteger(prop.number)) return prop.number;
+  return null;
+}
+
+function parsePropertyIdentifier(value) {
+  const code = String(value || "").trim().toUpperCase();
+  if (PROPERTY_CODE_PATTERN.test(code)) return { type: "current", code };
+  const legacyMatch = code.match(LEGACY_PROPERTY_CODE_PATTERN);
+  if (legacyMatch) return { type: "legacy", code, number: Number(legacyMatch[1]) };
+  return null;
+}
+
+function isSafePropertyUrl(value) {
+  if (!value || typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    const allowedHosts = new Set(["www.propertykickstart.co.uk", "propertykickstart.co.uk"]);
+    if (url.protocol !== "https:" || !allowedHosts.has(url.hostname) || !/^\/listing\/[A-Za-z0-9_-]+\/?$/.test(url.pathname)) return null;
+    if (url.username || url.password || url.port) return null;
+    return `${url.origin}${url.pathname}`;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function findPipelinePage(token, identifier) {
+  const filter = identifier.type === "current"
+    ? { property: "Property Code", rich_text: { equals: identifier.code } }
+    : { property: "Legacy Property ID", unique_id: { equals: identifier.number } };
+  const response = await notionRequest(
+    `/data_sources/${PIPELINE_DATA_SOURCE_ID}/query`,
+    token,
+    { method: "POST", body: JSON.stringify({ filter, page_size: 1 }) }
+  );
+  const page = (response.results || [])[0];
+  if (!page) return null;
+
+  const props = page.properties || {};
+  const canonicalCode = String(getText(props["Property Code"]) || "").trim().toUpperCase();
+  if (!PROPERTY_CODE_PATTERN.test(canonicalCode)) return null;
+  if (identifier.type === "current") {
+    if (canonicalCode !== identifier.code) return null;
+  } else {
+    if (getLegacyPropertyIdNumber(props["Legacy Property ID"]) !== identifier.number) return null;
+  }
+  return page;
 }
 
 exports.handler = async (event) => {
@@ -84,13 +131,22 @@ exports.handler = async (event) => {
     "Cache-Control": "no-store",
   };
 
-  const propertyCode = (event.queryStringParameters || {}).property;
+  const propertyCodeRaw = (event.queryStringParameters || {}).property;
 
-  if (!propertyCode || !propertyCode.trim()) {
+  if (propertyCodeRaw === undefined || propertyCodeRaw === null) {
     return {
       statusCode: 200,
       headers,
       body: JSON.stringify({ found: false, reason: "no_code_provided" }),
+    };
+  }
+
+  const identifier = parsePropertyIdentifier(propertyCodeRaw);
+  if (!String(propertyCodeRaw).trim() || !identifier) {
+    return {
+      statusCode: 400,
+      headers,
+      body: JSON.stringify({ found: false, reason: "invalid_code_format" }),
     };
   }
 
@@ -103,53 +159,26 @@ exports.handler = async (event) => {
     };
   }
 
-  const code = propertyCode.trim().toUpperCase();
-  const codeNumber = parsePropertyCodeNumber(code);
-
-  if (codeNumber === null) {
-    console.error("Could not parse a numeric Property Code from:", code);
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({ found: false, reason: "invalid_code_format", code }),
-    };
-  }
-
   try {
-    const response = await notionRequest(
-      `/data_sources/${PIPELINE_DATA_SOURCE_ID}/query`,
-      process.env.NOTION_TOKEN,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          filter: {
-            property: "Property Code",
-            unique_id: { equals: codeNumber },
-          },
-          page_size: 1,
-        }),
-      }
-    );
-
-    if (!response.results || response.results.length === 0) {
+    const page = await findPipelinePage(process.env.NOTION_TOKEN, identifier);
+    if (!page) {
       return {
-        statusCode: 200,
+        statusCode: 404,
         headers,
-        body: JSON.stringify({ found: false, reason: "not_found", code }),
+        body: JSON.stringify({ found: false, reason: "not_found" }),
       };
     }
 
-    const page = response.results[0];
-    const props = page.properties;
+    const props = page.properties || {};
 
     const availability = getText(props["Availability"]);
-    const propertyUrl = getText(props["Property URL"]);
+    const propertyUrl = isSafePropertyUrl(getText(props["Property URL"]));
 
     // Safe, public-facing fields only. Never include financials, Notes,
     // Query Notes/Status, Reservation Notes, Reserved By, or any Calc/PDF field.
     const safeData = {
       found: true,
-      propertyCode: getText(props["Property Code"]) || code,
+      propertyCode: getText(props["Property Code"]) || null,
       propertyName: getText(props["Property Name"]),
       town: getText(props["Town"]),
       strategy: getText(props["Strategy"]),
@@ -159,7 +188,6 @@ exports.handler = async (event) => {
       isLive: availability === "Available",
       propertyUrl: propertyUrl || null,
       mainPhotoUrl: getText(props["Main Photo URL"]) || null,
-      pageId: page.id,
     };
 
     return {
@@ -170,10 +198,11 @@ exports.handler = async (event) => {
   } catch (err) {
     console.error("Notion lookup error:", err.status, err.code, err.message);
     return {
-      statusCode: 200,
+      statusCode: 503,
       headers,
-      body: JSON.stringify({ found: false, reason: "lookup_error" }),
+      body: JSON.stringify({ found: false, reason: "lookup_unavailable" }),
     };
   }
 };
+
 

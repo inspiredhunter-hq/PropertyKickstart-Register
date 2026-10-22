@@ -81,6 +81,8 @@ test("lookup normalises and exactly matches the current text Property Code, retu
   assert.equal(body.propertyUrl, PROPERTY_URL);
   assert.equal(body.isLive, true);
   assert.equal("pageId" in body, false);
+  assert.equal("mainPhotoUrl" in body, false);
+  assert.equal(JSON.stringify(body).includes("images.example/property.jpg"), false);
   assert.equal(JSON.stringify(body).includes("must not be returned"), false);
   assert.equal(JSON.stringify(body).includes("Monthly Rent"), false);
 });
@@ -436,7 +438,7 @@ function createElement() {
 }
 
 async function runRegistrationPage(search, fetchImpl) {
-  const ids = ["propertyCode", "property-context", "pc-photo", "pc-title", "pc-meta", "pc-unavailable", "registration-form", "submit-btn", "form-error-banner", "firstName", "lastName", "email", "mobile", "marketingConsent", "field-firstName", "field-lastName", "field-email", "field-mobile", "field-property", "form-view", "confirmation"];
+  const ids = ["propertyCode", "property-context", "pc-title", "pc-meta", "pc-unavailable", "registration-form", "submit-btn", "form-error-banner", "firstName", "lastName", "email", "mobile", "marketingConsent", "field-firstName", "field-lastName", "field-email", "field-mobile", "field-property", "form-view", "confirmation"];
   const elements = Object.fromEntries(ids.map((id) => [id, createElement()]));
   const confirmationTitle = createElement();
   const confirmationIntro = createElement();

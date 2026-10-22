@@ -183,7 +183,6 @@
       <p class="intro">Enter your details to view this opportunity. You can also choose to receive alerts about similar properties.</p>
 
       <div class="property-context" id="property-context">
-        <img id="pc-photo" alt="" style="display:none;">
         <div class="pc-title" id="pc-title"></div>
         <div class="pc-meta" id="pc-meta"></div>
         <div class="pc-unavailable" id="pc-unavailable" style="display:none;">This specific opportunity is no longer available — but we'll register your interest for similar properties.</div>
@@ -260,7 +259,6 @@
 
   const propertyCodeInput = document.getElementById("propertyCode");
   const propertyContext = document.getElementById("property-context");
-  const pcPhoto = document.getElementById("pc-photo");
   const pcTitle = document.getElementById("pc-title");
   const pcMeta = document.getElementById("pc-meta");
   const pcUnavailable = document.getElementById("pc-unavailable");
@@ -300,10 +298,6 @@
         })
         .then((data) => {
           propertyLookupState = "resolved";
-          if (data.mainPhotoUrl) {
-            pcPhoto.src = data.mainPhotoUrl;
-            pcPhoto.style.display = "block";
-          }
           const bits = [];
           if (data.town) bits.push(Array.isArray(data.town) ? data.town.join(", ") : data.town);
           if (data.strategy) bits.push(data.strategy);

@@ -289,6 +289,59 @@ test("existing investor deal relationships are retained when a new property is r
   ]);
 });
 
+test("an existing investor is updated by email instead of creating a duplicate", async () => {
+  const existingInvestor = {
+    id: "investor-existing",
+    properties: { "Deals Shared": { relation: [{ id: "previous-deal" }] } },
+  };
+  const calls = registerMockFetch({ existingInvestor });
+  const result = await register(registerEvent({
+    propertyCode: PROPERTY_CODE,
+    email: "existing@example.test",
+    firstName: "Updated",
+    lastName: "Investor",
+  }));
+  const update = calls.find((call) => call.url === "https://api.notion.com/v1/pages/investor-existing");
+  assert.equal(result.statusCode, 200);
+  assert.equal(JSON.parse(result.body).redirectTo, PROPERTY_URL);
+  assert.equal(update.body.properties["Full Name"].title[0].text.content, "Updated Investor");
+  assert.deepEqual(update.body.properties["Deals Shared"].relation, [
+    { id: "previous-deal" },
+    { id: "pipeline-page-1" },
+  ]);
+  assert.equal(calls.some((call) => call.url === "https://api.notion.com/v1/pages"), false);
+});
+
+test("a duplicate Brevo contact is updated and remains a successful registration", async () => {
+  const calls = [];
+  global.fetch = async (url, options = {}) => {
+    const call = { url: String(url), method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null };
+    calls.push(call);
+    if (call.url.includes(`/data_sources/${PIPELINE_ID}/query`)) return jsonResponse({ results: [samplePipelinePage()] });
+    if (call.url.includes(`/data_sources/${INVESTORS_ID}/query`)) return jsonResponse({ results: [] });
+    if (call.url === "https://api.brevo.com/v3/contacts") return jsonResponse({ code: "duplicate_parameter" }, 400);
+    if (call.url === "https://api.brevo.com/v3/contacts/existing%40example.test") return jsonResponse({}, 204);
+    if (call.url === "https://api.notion.com/v1/pages") return jsonResponse({ id: "investor-page-1" });
+    throw new Error(`Unexpected request: ${call.method} ${call.url}`);
+  };
+
+  const result = await register(registerEvent({
+    propertyCode: PROPERTY_CODE,
+    email: "existing@example.test",
+    marketingConsent: true,
+  }));
+  const body = JSON.parse(result.body);
+  const brevoCreate = calls.find((call) => call.url === "https://api.brevo.com/v3/contacts");
+  const brevoUpdate = calls.find((call) => call.method === "PUT" && call.url.includes("/contacts/"));
+  const crmCreate = calls.find((call) => call.url === "https://api.notion.com/v1/pages");
+  assert.equal(result.statusCode, 200);
+  assert.equal(body.redirectTo, PROPERTY_URL);
+  assert.equal(brevoCreate.body.updateEnabled, true);
+  assert.equal(brevoUpdate.body.attributes.PROPERTY_CODE, PROPERTY_CODE);
+  assert.equal(brevoUpdate.body.attributes.SMS, "+447123456789");
+  assert.equal(crmCreate.body.properties["Brevo Contact Synced"].checkbox, true);
+});
+
 test("missing or unsafe Pipeline URL records the lead without redirecting and reports the issue", async () => {
   const page = samplePipelinePage({ "Property URL": { type: "url", url: "https://attacker.example/" } });
   const calls = registerMockFetch({ pipelinePage: page });
@@ -396,7 +449,7 @@ async function runRegistrationPage(search, fetchImpl) {
       return match ? elements[match[1].replace("field-", "")] : confirmationIntro;
     },
   };
-  const window = { location: { search, href: "https://register.propertykickstart.co.uk/" } };
+  const window = { location: { search, href: "https://register.propertykickstart.co.uk/" + search } };
   const html = fs.readFileSync(path.join(__dirname, "../index.html"), "utf8");
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   vm.runInNewContext(script, { document, window, URLSearchParams, fetch: fetchImpl, console });
@@ -437,17 +490,67 @@ test("property-specific page auto-carries a normalised code and redirects after 
   assert.equal(page.window.location.href, PROPERTY_URL);
 });
 
-test("invalid property-specific route is blocked instead of becoming a general registration", async () => {
+test("malformed property code in the URL falls back to the general registration flow", async () => {
   let calls = 0;
-  const page = await runRegistrationPage("?property=not-a-property-code", async () => { calls += 1; return jsonResponse({}); });
+  const page = await runRegistrationPage(
+    "?property=not-a-property-code&source=linkedin&campaign=post-17&utm_source=linkedin&utm_medium=social&utm_campaign=post-17",
+    async (url, options = {}) => {
+      calls += 1;
+      assert.equal(url.endsWith("/register"), true);
+      const body = JSON.parse(options.body);
+      assert.equal(body.propertyCode, "");
+      assert.equal(body.source, "linkedin");
+      assert.equal(body.campaign, "post-17");
+      assert.equal(body.utmSource, "linkedin");
+      assert.equal(body.utmMedium, "social");
+      assert.equal(body.utmCampaign, "post-17");
+      return { ok: true, json: async () => ({ success: true, redirectTo: null, registrationType: "General Alert Only" }) };
+    }
+  );
+  assert.equal(page.elements.propertyCode.value, "");
+  assert.equal(page.elements["field-property"].style.display, "");
+  assert.equal(page.elements["submit-btn"].disabled, false);
+  assert.match(page.elements["form-error-banner"].textContent, /property code is optional/);
   page.elements.firstName.value = "Hanna";
   page.elements.lastName.value = "Example";
   page.elements.email.value = "hanna@example.test";
   page.elements.mobile.value = "07123 456789";
   page.elements["registration-form"].listeners.submit({ preventDefault() {} });
-  assert.equal(calls, 0);
-  assert.equal(page.elements["submit-btn"].disabled, true);
-  assert.equal(page.elements["form-error-banner"].classList.contains("show"), true);
+  await new Promise(setImmediate);
+  assert.equal(calls, 1);
+  assert.equal(page.elements.confirmation.classList.contains("show"), true);
+});
+
+test("unknown property code in the URL falls back to general registration and preserves tracking", async () => {
+  const calls = [];
+  const page = await runRegistrationPage(
+    "?property=HA-NW-ABCDE&source=instagram&campaign=autumn&utm_source=instagram&utm_medium=social&utm_campaign=autumn",
+    async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.includes("lookup-property")) return { ok: false, json: async () => ({ found: false, reason: "not_found" }) };
+      return { ok: true, json: async () => ({ success: true, redirectTo: null, registrationType: "General Alert Only" }) };
+    }
+  );
+  assert.equal(page.elements.propertyCode.value, "");
+  assert.equal(page.elements["field-property"].style.display, "");
+  assert.equal(page.elements["submit-btn"].disabled, false);
+  page.elements.firstName.value = "Hanna";
+  page.elements.lastName.value = "Example";
+  page.elements.email.value = "hanna@example.test";
+  page.elements.mobile.value = "07123 456789";
+  page.elements["registration-form"].listeners.submit({ preventDefault() {} });
+  await new Promise(setImmediate);
+  const registration = calls.find((call) => call.url.endsWith("/register"));
+  const body = JSON.parse(registration.options.body);
+  assert.equal(body.propertyCode, "");
+  assert.equal(body.source, "instagram");
+  assert.equal(body.campaign, "autumn");
+  assert.equal(body.utmSource, "instagram");
+  assert.equal(body.utmMedium, "social");
+  assert.equal(body.utmCampaign, "autumn");
+  assert.equal(body.landingPageUrl.includes("property=HA-NW-ABCDE"), true);
+  assert.equal(page.elements.confirmation.classList.contains("show"), true);
+  assert.equal(calls.filter((call) => call.url.includes("lookup-property")).length, 1);
 });
 
 test("mobile layout viewport and current Property code wording are present", () => {

@@ -275,6 +275,14 @@
     errorBanner.classList.add("show");
   }
 
+  function fallBackToGeneralFlow() {
+    propertyLookupState = "fallback";
+    propertyCodeInput.value = "";
+    document.getElementById("field-property").style.display = "";
+    submitBtn.disabled = false;
+    showBanner("We couldn't identify this property. You can still register below; the property code is optional.");
+  }
+
   if (hasPropertyParam) {
     propertyCodeInput.value = propertyCodeParam;
     // Keep the carried code in the form payload while avoiding a re-entry step.
@@ -282,8 +290,7 @@
     submitBtn.disabled = true;
 
     if (!currentCodePattern.test(propertyCodeParam) && !legacyCodePattern.test(propertyCodeParam)) {
-      propertyLookupState = "failed";
-      showBanner("This property link is invalid. Please check the link or contact Property Kickstart.");
+      fallBackToGeneralFlow();
     } else {
       fetch("/.netlify/functions/lookup-property?property=" + encodeURIComponent(propertyCodeParam))
         .then(async (response) => {
@@ -307,8 +314,7 @@
           submitBtn.disabled = false;
         })
         .catch(() => {
-          propertyLookupState = "failed";
-          showBanner("This property link could not be verified. Please try again later or contact Property Kickstart.");
+          fallBackToGeneralFlow();
         });
     }
   }
@@ -361,7 +367,7 @@
       setFieldError("field-mobile", true);
       valid = false;
     }
-    if (hasPropertyParam && propertyLookupState !== "resolved") {
+    if (propertyLookupState === "pending") {
       showBanner("This property link could not be verified. Please check the link or try again later.");
       return;
     }

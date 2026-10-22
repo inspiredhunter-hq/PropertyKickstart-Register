@@ -565,6 +565,8 @@ test("mobile layout viewport and current Property code wording are present", () 
   assert.match(html, /<label for="propertyCode">Property code/);
   assert.match(html, /placeholder="e\.g\. BTL-NW-3GF2B"/);
   assert.doesNotMatch(html, /id="propertyCode"[^>]*required/);
+  assert.doesNotMatch(html, /pc-photo|mainPhotoUrl/);
+  assert.doesNotMatch(html, /<img(?![^>]*property-kickstart-logo)[^>]*>/i);
   assert.match(html, /<input type="checkbox" id="marketingConsent"[^>]*>/);
   assert.doesNotMatch(html, /<input type="checkbox" id="marketingConsent"[^>]*required/);
   assert.equal(fs.existsSync(path.join(__dirname, "../assets/property-kickstart-logo.png")), true);

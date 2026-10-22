@@ -187,7 +187,6 @@ exports.handler = async (event) => {
       availability, // "Available" | "Reserved" | "Sold"
       isLive: availability === "Available",
       propertyUrl: propertyUrl || null,
-      mainPhotoUrl: getText(props["Main Photo URL"]) || null,
     };
 
     return {

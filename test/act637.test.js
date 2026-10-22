@@ -289,6 +289,59 @@ test("existing investor deal relationships are retained when a new property is r
   ]);
 });
 
+test("an existing investor is updated by email instead of creating a duplicate", async () => {
+  const existingInvestor = {
+    id: "investor-existing",
+    properties: { "Deals Shared": { relation: [{ id: "previous-deal" }] } },
+  };
+  const calls = registerMockFetch({ existingInvestor });
+  const result = await register(registerEvent({
+    propertyCode: PROPERTY_CODE,
+    email: "existing@example.test",
+    firstName: "Updated",
+    lastName: "Investor",
+  }));
+  const update = calls.find((call) => call.url === "https://api.notion.com/v1/pages/investor-existing");
+  assert.equal(result.statusCode, 200);
+  assert.equal(JSON.parse(result.body).redirectTo, PROPERTY_URL);
+  assert.equal(update.body.properties["Full Name"].title[0].text.content, "Updated Investor");
+  assert.deepEqual(update.body.properties["Deals Shared"].relation, [
+    { id: "previous-deal" },
+    { id: "pipeline-page-1" },
+  ]);
+  assert.equal(calls.some((call) => call.url === "https://api.notion.com/v1/pages"), false);
+});
+
+test("a duplicate Brevo contact is updated and remains a successful registration", async () => {
+  const calls = [];
+  global.fetch = async (url, options = {}) => {
+    const call = { url: String(url), method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null };
+    calls.push(call);
+    if (call.url.includes(`/data_sources/${PIPELINE_ID}/query`)) return jsonResponse({ results: [samplePipelinePage()] });
+    if (call.url.includes(`/data_sources/${INVESTORS_ID}/query`)) return jsonResponse({ results: [] });
+    if (call.url === "https://api.brevo.com/v3/contacts") return jsonResponse({ code: "duplicate_parameter" }, 400);
+    if (call.url === "https://api.brevo.com/v3/contacts/existing%40example.test") return jsonResponse({}, 204);
+    if (call.url === "https://api.notion.com/v1/pages") return jsonResponse({ id: "investor-page-1" });
+    throw new Error(`Unexpected request: ${call.method} ${call.url}`);
+  };
+
+  const result = await register(registerEvent({
+    propertyCode: PROPERTY_CODE,
+    email: "existing@example.test",
+    marketingConsent: true,
+  }));
+  const body = JSON.parse(result.body);
+  const brevoCreate = calls.find((call) => call.url === "https://api.brevo.com/v3/contacts");
+  const brevoUpdate = calls.find((call) => call.method === "PUT" && call.url.includes("/contacts/"));
+  const crmCreate = calls.find((call) => call.url === "https://api.notion.com/v1/pages");
+  assert.equal(result.statusCode, 200);
+  assert.equal(body.redirectTo, PROPERTY_URL);
+  assert.equal(brevoCreate.body.updateEnabled, true);
+  assert.equal(brevoUpdate.body.attributes.PROPERTY_CODE, PROPERTY_CODE);
+  assert.equal(brevoUpdate.body.attributes.SMS, "+447123456789");
+  assert.equal(crmCreate.body.properties["Brevo Contact Synced"].checkbox, true);
+});
+
 test("missing or unsafe Pipeline URL records the lead without redirecting and reports the issue", async () => {
   const page = samplePipelinePage({ "Property URL": { type: "url", url: "https://attacker.example/" } });
   const calls = registerMockFetch({ pipelinePage: page });
